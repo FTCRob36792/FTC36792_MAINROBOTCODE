@@ -56,7 +56,10 @@ public class BioBuzzFieldCentricTeleOp extends LinearOpMode {
     // =====================================================================
     @com.acmerobotics.dashboard.config.Config
     public static class Config {
-        // [VERIFY] Exact names from the Driver Station Robot Configuration.
+        // =====================================================================
+        // 1. HARDWARE CONFIGURATION NAMES
+        // Must match your Driver Station Robot Configuration names exactly.
+        // =====================================================================
         public static String FRONT_LEFT_NAME = "front_left";
         public static String FRONT_RIGHT_NAME = "front_right";
         public static String BACK_LEFT_NAME = "back_left";
@@ -65,80 +68,101 @@ public class BioBuzzFieldCentricTeleOp extends LinearOpMode {
         public static String LIMELIGHT_NAME = "limelight";
         public static String WEBCAM_NAME = "Webcam 1";
 
-        // [LIVE TUNE - MOTOR DIRECTIONS]
-        // Toggle these on FTC Dashboard or use RB + D-Pad wheel test mode to find inverted motors!
-        public static boolean REVERSE_FRONT_LEFT = false;
-        public static boolean REVERSE_FRONT_RIGHT = true;
-        public static boolean REVERSE_BACK_LEFT = false;
-        public static boolean REVERSE_BACK_RIGHT = true;
+        // =====================================================================
+        // 2. MOTOR DIRECTION REVERSALS
+        // Live-tunable on FTC Dashboard. Use Gamepad 1 [RB + D-Pad] wheel test mode:
+        // If a wheel spins backward during test, flip its boolean to true.
+        // =====================================================================
+        public static boolean REVERSE_FRONT_LEFT = false;  // Front Left Motor Direction
+        public static boolean REVERSE_FRONT_RIGHT = true;  // Front Right Motor Direction
+        public static boolean REVERSE_BACK_LEFT = false;   // Back Left Motor Direction
+        public static boolean REVERSE_BACK_RIGHT = true;   // Back Right Motor Direction
 
-        // [LIVE TUNE - ODOMETRY OFFSETS & POD DIRECTIONS]
-        public static double PINPOINT_X_POD_OFFSET_MM = 0.0;
-        public static double PINPOINT_Y_POD_OFFSET_MM = 0.0;
-        public static boolean REVERSE_X_ENCODER = false;
-        public static boolean REVERSE_Y_ENCODER = false;
+        // =====================================================================
+        // 3. GO BILDA PINPOINT ODOMETRY CONFIGURATION
+        // Distance from tracking center to pods in millimeters (Positive or Negative).
+        // Appropriate values: Measure actual pod distances with calipers/ruler.
+        // =====================================================================
+        public static double PINPOINT_X_POD_OFFSET_MM = 0.0; // Range: -200.0 to +200.0 mm
+        public static double PINPOINT_Y_POD_OFFSET_MM = 0.0; // Range: -200.0 to +200.0 mm
+        public static boolean REVERSE_X_ENCODER = false;      // True if forward motion decreases X
+        public static boolean REVERSE_Y_ENCODER = false;      // True if right strafe decreases Y
         public static GoBildaPinpointDriver.GoBildaOdometryPods ODOMETRY_POD_TYPE =
                 GoBildaPinpointDriver.GoBildaOdometryPods.goBILDA_4_BAR_POD;
 
-        // [LIVE TUNE - WEBCAM EXPOSURE CONTROL]
-        public static boolean WEBCAM_MANUAL_EXPOSURE = false;
-        public static long WEBCAM_EXPOSURE_MS = 15;
-        public static int WEBCAM_GAIN = 100;
+        // =====================================================================
+        // 4. LOGITECH WEBCAM EXPOSURE & GAIN CONTROL
+        // Tune on FTC Dashboard to prevent image blur or washed out colors.
+        // =====================================================================
+        public static boolean WEBCAM_MANUAL_EXPOSURE = false; // False = Continuous Auto Exposure; True = Fixed Manual
+        public static long WEBCAM_EXPOSURE_MS = 15;           // Appropriate values: 5ms to 30ms (lower = less motion blur)
+        public static int WEBCAM_GAIN = 100;                  // Appropriate values: 0 to 255 (higher = brighter image)
 
-        // [LIVE TUNE - FIELD & ASSIST TOGGLES]
-        public static boolean RED_ALLIANCE = true;
-        public static boolean ENABLE_APRILTAG_AUTO_ALIGN = false;
-        public static boolean ENABLE_BLOB_AUTO_APPROACH = false;
+        // =====================================================================
+        // 5. MATCH ALLIANCE & SAFETY ASSIST TOGGLES
+        // =====================================================================
+        public static boolean RED_ALLIANCE = true;                // True = RED Alliance (Tags 30-37); False = BLUE (Tags 38-45)
+        public static boolean ENABLE_APRILTAG_AUTO_ALIGN = false; // Safety lock for Gamepad 1 [A] AprilTag Assist
+        public static boolean ENABLE_BLOB_AUTO_APPROACH = false;  // Safety lock for Gamepad 1 [B] Color Blob Assist
 
-        public static double START_X_IN = 0.0;
-        public static double START_Y_IN = 0.0;
-        public static double START_HEADING_DEG = 0.0;
+        // =====================================================================
+        // 6. ROBOT STARTING FIELD POSE
+        // Set match starting position in field inches and heading.
+        // =====================================================================
+        public static double START_X_IN = 0.0;        // Initial X field position (Inches)
+        public static double START_Y_IN = 0.0;        // Initial Y field position (Inches)
+        public static double START_HEADING_DEG = 0.0; // Initial heading (Degrees: 0° = Facing Audience/Target)
 
-        // Limelight
-        public static int APRILTAG_PIPELINE = 0;
-        public static int LIMELIGHT_POLL_RATE_HZ = 100;
-        public static long MAX_RESULT_AGE_MS = 250;
+        // =====================================================================
+        // 7. DRIVER STICK & SPEED LIMIT CAPS
+        // Prevents small joystick drift and limits speed during automatic assists.
+        // =====================================================================
+        public static double STICK_DEADZONE = 0.16;       // Appropriate values: 0.08 to 0.20 (16% threshold)
+        public static double MAX_AUTO_TRANSLATION = 0.20; // Max strafe/forward power cap in assist (0.15 to 0.40)
+        public static double MAX_AUTO_TURN = 0.12;        // Max turning power cap in assist (0.08 to 0.25)
 
-        // Tags
-        public static final int[] CELL_TAG_ID_MIN = {30, 34, 38, 42};
-        public static final int[] CELL_TAG_ID_MAX = {33, 37, 41, 45};
-
-        // Webcam
-        public static int WEBCAM_WIDTH = 640;
-        public static int WEBCAM_HEIGHT = 480;
-        public static OpenCvCameraRotation WEBCAM_ROTATION = OpenCvCameraRotation.UPRIGHT;
-        public static double WEBCAM_HORIZONTAL_FOV_DEG = 60.0;
-
-        // HSV Blob Thresholds
-        public static int HSV_H_MIN = 20;
-        public static int HSV_H_MAX = 38;
-        public static int HSV_S_MIN = 80;
-        public static int HSV_S_MAX = 255;
-        public static int HSV_V_MIN = 60;
-        public static int HSV_V_MAX = 255;
-        public static double MIN_BLOB_AREA_PX = 350.0;
-
-        // Drive caps
-        public static double STICK_DEADZONE = 0.16;
-        public static double MAX_AUTO_TRANSLATION = 0.20;
-        public static double MAX_AUTO_TURN = 0.12;
-
-        // PID & Align Tuning
-        public static double TARGET_STANDOFF_IN = 36.0;
-        public static double POSITION_KP = 0.025;
-        public static double HEADING_KP = 0.012;
-        public static double POSITION_TOLERANCE_IN = 2.5;
-        public static double HEADING_TOLERANCE_DEG = 3.0;
+        // =====================================================================
+        // 8. APRILTAG ALIGNMENT CONTROLLER (Gamepad 1 A)
+        // Proportional (Kp) drive controller for auto-aligning to scoring cells.
+        // =====================================================================
+        public static double TARGET_STANDOFF_IN = 36.0;   // Distance in inches from cell tag to stop at (12.0 to 48.0 in)
+        public static double POSITION_KP = 0.025;         // Drive power per inch of error (Appropriate: 0.015 to 0.040)
+        public static double HEADING_KP = 0.012;          // Turn power per degree of error (Appropriate: 0.008 to 0.020)
+        public static double POSITION_TOLERANCE_IN = 2.5; // Stop threshold for position error (Appropriate: 1.0 to 3.5 in)
+        public static double HEADING_TOLERANCE_DEG = 3.0; // Stop threshold for heading error (Appropriate: 1.5 to 5.0 deg)
 
         public static double CAMERA_TAG_ROLL_OFFSET_DEG = 0.0;
         public static double CELL_UPRIGHT_ROLL_LIMIT_DEG = 90.0;
         public static double MIN_DISTANCE_FOR_BEARING_IN = 4.0;
         public static double CELL_POSITION_SMOOTHING_ALPHA = 0.25;
 
-        public static double BLOB_STOP_AREA_PERCENT = 4.0;
-        public static double BLOB_FORWARD_KP = 0.055;
-        public static double BLOB_STRAFE_KP = 0.014;
-        public static double BLOB_CENTER_TOLERANCE_DEG = 2.5;
+        // =====================================================================
+        // 9. LOGITECH WEBCAM OPENCV HSV COLOR BLOB TRACKING (Gamepad 1 B)
+        // HSV Color thresholds for target sample/specimen detection.
+        // OpenCV Hue: 0-179 | Saturation: 0-255 | Value/Brightness: 0-255
+        // =====================================================================
+        public static int HSV_H_MIN = 20;                     // Yellow Hue Min (Appropriate: 15 to 25)
+        public static int HSV_H_MAX = 38;                     // Yellow Hue Max (Appropriate: 35 to 45)
+        public static int HSV_S_MIN = 80;                     // Saturation Min (Appropriate: 60 to 120, ignores grey/white)
+        public static int HSV_S_MAX = 255;                    // Saturation Max
+        public static int HSV_V_MIN = 60;                     // Value/Brightness Min (Appropriate: 40 to 100, ignores shadows)
+        public static int HSV_V_MAX = 255;                    // Value/Brightness Max
+        public static double MIN_BLOB_AREA_PX = 350.0;        // Min pixel area to reject noise (Appropriate: 200 to 800 px)
+        public static double BLOB_STOP_AREA_PERCENT = 4.0;    // Target screen area % to stop at (Appropriate: 2.0% to 8.0%)
+        public static double BLOB_FORWARD_KP = 0.055;         // Forward power per area % remaining (Appropriate: 0.03 to 0.08)
+        public static double BLOB_STRAFE_KP = 0.014;          // Strafe centering power per degree offset (0.008 to 0.025)
+        public static double BLOB_CENTER_TOLERANCE_DEG = 2.5; // Centering tolerance in degrees (Appropriate: 1.0 to 4.0 deg)
+
+        // Limelight & AprilTag ID Ranges
+        public static int APRILTAG_PIPELINE = 0;
+        public static int LIMELIGHT_POLL_RATE_HZ = 100;
+        public static long MAX_RESULT_AGE_MS = 250;
+        public static final int[] CELL_TAG_ID_MIN = {30, 34, 38, 42};
+        public static final int[] CELL_TAG_ID_MAX = {33, 37, 41, 45};
+        public static int WEBCAM_WIDTH = 640;
+        public static int WEBCAM_HEIGHT = 480;
+        public static OpenCvCameraRotation WEBCAM_ROTATION = OpenCvCameraRotation.UPRIGHT;
+        public static double WEBCAM_HORIZONTAL_FOV_DEG = 60.0;
 
         public static long TARGET_STATE_TIMEOUT_MS = 1500;
         public static long VISION_LOSS_TIMEOUT_MS = 700;
