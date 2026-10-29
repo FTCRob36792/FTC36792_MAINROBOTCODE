@@ -1,5 +1,7 @@
 package org.firstinspires.ftc.teamcode;
 
+import com.acmerobotics.dashboard.FtcDashboard;
+import com.acmerobotics.dashboard.telemetry.MultipleTelemetry;
 import com.qualcomm.hardware.gobilda.GoBildaPinpointDriver;
 import com.qualcomm.hardware.limelightvision.LLResult;
 import com.qualcomm.hardware.limelightvision.LLResultTypes;
@@ -9,10 +11,18 @@ import com.qualcomm.robotcore.eventloop.opmode.TeleOp;
 import com.qualcomm.robotcore.hardware.DcMotor;
 import com.qualcomm.robotcore.hardware.DcMotorSimple;
 import org.firstinspires.ftc.robotcore.external.hardware.camera.WebcamName;
+import org.firstinspires.ftc.robotcore.external.hardware.camera.controls.ExposureControl;
+import org.firstinspires.ftc.robotcore.external.hardware.camera.controls.GainControl;
+import org.firstinspires.ftc.robotcore.external.navigation.AngleUnit;
+import org.firstinspires.ftc.robotcore.external.navigation.DistanceUnit;
+import org.firstinspires.ftc.robotcore.external.navigation.Pose2D;
+import org.firstinspires.ftc.robotcore.external.navigation.Pose3D;
+import org.firstinspires.ftc.robotcore.external.navigation.Position;
 import org.openftc.easyopencv.OpenCvCamera;
 import org.openftc.easyopencv.OpenCvCameraFactory;
 import org.openftc.easyopencv.OpenCvCameraRotation;
 import org.openftc.easyopencv.OpenCvPipeline;
+import org.openftc.easyopencv.OpenCvWebcam;
 import org.opencv.core.Core;
 import org.opencv.core.Mat;
 import org.opencv.core.MatOfPoint;
@@ -20,14 +30,9 @@ import org.opencv.core.Rect;
 import org.opencv.core.Scalar;
 import org.opencv.imgproc.Imgproc;
 
-import org.firstinspires.ftc.robotcore.external.navigation.AngleUnit;
-import org.firstinspires.ftc.robotcore.external.navigation.DistanceUnit;
-import org.firstinspires.ftc.robotcore.external.navigation.Pose2D;
-import org.firstinspires.ftc.robotcore.external.navigation.Pose3D;
-import org.firstinspires.ftc.robotcore.external.navigation.Position;
-
 import java.util.List;
 import java.util.Locale;
+import java.util.concurrent.TimeUnit;
 
 /**
  * BIOBUZZ TeleOp starter:
@@ -38,120 +43,106 @@ import java.util.Locale;
  * - Logitech webcam runs an independent EasyOpenCV HSV color-blob pipeline concurrently.
  * - A: start/stop AprilTag-based alignment to the currently observed open cell for this alliance.
  * - B: start/stop approaching the largest visible webcam blob.
- * - Manual stick input cancels either assist mode immediately.
- *
- * IMPORTANT: Set all hardware names, starting pose, Pinpoint offsets/directions,
- * Limelight camera transform, HSV bounds, and webcam field of view before robot testing.
+ * - Y / Options: reset field-centric drive orientation to current robot heading.
+ * - Hold Right Bumper (RB) + D-Pad UP/RIGHT/DOWN/LEFT: spin individual wheels forward to test motor directions.
+ * - FTC Dashboard Live Tuning (@Config): tune motor reversals, Pinpoint offsets, and webcam exposure live!
  */
 @TeleOp(name = "BIOBUZZ Field-Centric Vision TeleOp", group = "BIOBUZZ")
 public class BioBuzzFieldCentricTeleOp extends LinearOpMode {
 
     // =====================================================================
     // ALL ROBOT-SPECIFIC CONFIGURATION / TUNING PARAMETERS LIVE HERE.
-    // Change values in this section first; avoid tuning magic numbers elsewhere.
-    // Any value marked VERIFY or CALIBRATE must be checked on your actual robot.
-    // Automatic assists are DISABLED by default until sensor and motion tests pass.
+    // Annotated with @Config so all fields are live-editable on FTC Dashboard!
     // =====================================================================
-    private static final class Config {
-        private Config() { }
-
+    @com.acmerobotics.dashboard.config.Config
+    public static class Config {
         // [VERIFY] Exact names from the Driver Station Robot Configuration.
-        static final String FRONT_LEFT_NAME = "front_left";
-        static final String FRONT_RIGHT_NAME = "front_right";
-        static final String BACK_LEFT_NAME = "back_left";
-        static final String BACK_RIGHT_NAME = "back_right";
-        static final String PINPOINT_NAME = "pinpoint";
-        static final String LIMELIGHT_NAME = "limelight";
-        static final String WEBCAM_NAME = "Webcam 1";
+        public static String FRONT_LEFT_NAME = "front_left";
+        public static String FRONT_RIGHT_NAME = "front_right";
+        public static String BACK_LEFT_NAME = "back_left";
+        public static String BACK_RIGHT_NAME = "back_right";
+        public static String PINPOINT_NAME = "pinpoint";
+        public static String LIMELIGHT_NAME = "limelight";
+        public static String WEBCAM_NAME = "Webcam 1";
 
-        // [VERIFY] Limelight pipeline index configured for AprilTags.
-        static final int APRILTAG_PIPELINE = 0;
-        static final int LIMELIGHT_POLL_RATE_HZ = 100;
-        static final long MAX_RESULT_AGE_MS = 250;
+        // [LIVE TUNE - MOTOR DIRECTIONS]
+        // Toggle these on FTC Dashboard or use RB + D-Pad wheel test mode to find inverted motors!
+        public static boolean REVERSE_FRONT_LEFT = false;
+        public static boolean REVERSE_FRONT_RIGHT = true;
+        public static boolean REVERSE_BACK_LEFT = false;
+        public static boolean REVERSE_BACK_RIGHT = true;
 
-        // [VERIFY] Game-specific tag-ID groups. These are assumptions from the starter code;
-        // confirm against the official game field/tag layout before relying on target selection.
-        static final int[] CELL_TAG_ID_MIN = {30, 34, 38, 42};
-        static final int[] CELL_TAG_ID_MAX = {33, 37, 41, 45};
-
-        // [SET] True for RED, false for BLUE.
-        static final boolean RED_ALLIANCE = true;
-
-        // [MEASURE] Actual robot starting pose in the Pinpoint field coordinate system.
-        static final double START_X_IN = 0.0;
-        static final double START_Y_IN = 0.0;
-        static final double START_HEADING_DEG = 0.0;
-
-        // [MEASURE] Pinpoint pod offsets in millimeters relative to robot tracking center.
-        // Use the Pinpoint documentation's sign convention; zero is only correct if measured.
-        static final double PINPOINT_X_POD_OFFSET_MM = 0.0;
-        static final double PINPOINT_Y_POD_OFFSET_MM = 0.0;
-        // [VERIFY] Change pod type if your robot uses swingarm pods.
-        static final GoBildaPinpointDriver.GoBildaOdometryPods ODOMETRY_POD_TYPE =
+        // [LIVE TUNE - ODOMETRY OFFSETS & POD DIRECTIONS]
+        public static double PINPOINT_X_POD_OFFSET_MM = 0.0;
+        public static double PINPOINT_Y_POD_OFFSET_MM = 0.0;
+        public static boolean REVERSE_X_ENCODER = false;
+        public static boolean REVERSE_Y_ENCODER = false;
+        public static GoBildaPinpointDriver.GoBildaOdometryPods ODOMETRY_POD_TYPE =
                 GoBildaPinpointDriver.GoBildaOdometryPods.goBILDA_4_BAR_POD;
-        // [CALIBRATE] Encoder directions must match measured positive X/Y motion.
-        static final GoBildaPinpointDriver.EncoderDirection X_ENCODER_DIRECTION =
-                GoBildaPinpointDriver.EncoderDirection.FORWARD;
-        static final GoBildaPinpointDriver.EncoderDirection Y_ENCODER_DIRECTION =
-                GoBildaPinpointDriver.EncoderDirection.FORWARD;
 
-        // [VERIFY] Motor direction configuration. Test each wheel with the robot safely lifted.
-        static final DcMotorSimple.Direction FRONT_LEFT_DIRECTION = DcMotorSimple.Direction.FORWARD;
-        static final DcMotorSimple.Direction FRONT_RIGHT_DIRECTION = DcMotorSimple.Direction.REVERSE;
-        static final DcMotorSimple.Direction BACK_LEFT_DIRECTION = DcMotorSimple.Direction.FORWARD;
-        static final DcMotorSimple.Direction BACK_RIGHT_DIRECTION = DcMotorSimple.Direction.REVERSE;
+        // [LIVE TUNE - WEBCAM EXPOSURE CONTROL]
+        public static boolean WEBCAM_MANUAL_EXPOSURE = false;
+        public static long WEBCAM_EXPOSURE_MS = 15;
+        public static int WEBCAM_GAIN = 100;
 
-        // [VERIFY] Camera image format/orientation. Resolution is used for the webcam stream.
-        static final int WEBCAM_WIDTH = 640;
-        static final int WEBCAM_HEIGHT = 480;
-        static final OpenCvCameraRotation WEBCAM_ROTATION = OpenCvCameraRotation.UPRIGHT;
-        // [CALIBRATE] Actual horizontal FOV at the selected resolution and camera mode.
-        static final double WEBCAM_HORIZONTAL_FOV_DEG = 60.0;
+        // [LIVE TUNE - FIELD & ASSIST TOGGLES]
+        public static boolean RED_ALLIANCE = true;
+        public static boolean ENABLE_APRILTAG_AUTO_ALIGN = false;
+        public static boolean ENABLE_BLOB_AUTO_APPROACH = false;
 
-        // [CALIBRATE] HSV color threshold for the target element under your lighting.
-        // OpenCV hue range is 0..179; saturation and value ranges are 0..255.
-        static final int HSV_H_MIN = 20;
-        static final int HSV_H_MAX = 38;
-        static final int HSV_S_MIN = 80;
-        static final int HSV_S_MAX = 255;
-        static final int HSV_V_MIN = 60;
-        static final int HSV_V_MAX = 255;
-        // [CALIBRATE] Minimum contour area to reject small noise (pixels squared).
-        static final double MIN_BLOB_AREA_PX = 350.0;
+        public static double START_X_IN = 0.0;
+        public static double START_Y_IN = 0.0;
+        public static double START_HEADING_DEG = 0.0;
 
-        // [SAFETY] Leave false until each assist has been tested and calibrated independently.
-        static final boolean ENABLE_APRILTAG_AUTO_ALIGN = false;
-        static final boolean ENABLE_BLOB_AUTO_APPROACH = false;
+        // Limelight
+        public static int APRILTAG_PIPELINE = 0;
+        public static int LIMELIGHT_POLL_RATE_HZ = 100;
+        public static long MAX_RESULT_AGE_MS = 250;
 
-        // [TUNE] Driver response and automatic-drive power caps (0.0 to 1.0).
-        static final double STICK_DEADZONE = 0.16;
-        static final double MAX_AUTO_TRANSLATION = 0.20;
-        static final double MAX_AUTO_TURN = 0.12;
+        // Tags
+        public static final int[] CELL_TAG_ID_MIN = {30, 34, 38, 42};
+        public static final int[] CELL_TAG_ID_MAX = {33, 37, 41, 45};
 
-        // [MEASURE/TUNE] Shooting alignment geometry and proportional controller.
-        static final double TARGET_STANDOFF_IN = 36.0;
-        static final double POSITION_KP = 0.025; // motor power per inch of field-position error
-        static final double HEADING_KP = 0.012;  // motor power per degree of heading error
-        static final double POSITION_TOLERANCE_IN = 2.5;
-        static final double HEADING_TOLERANCE_DEG = 3.0;
-        // [CALIBRATE] Camera/tag roll baseline and classification threshold.
-        // The roll-based open/closed heuristic is experimental, not validated game logic.
-        static final double CAMERA_TAG_ROLL_OFFSET_DEG = 0.0;
-        static final double CELL_UPRIGHT_ROLL_LIMIT_DEG = 90.0;
-        // [TUNE] Prevent a noisy single-frame position estimate from defining the target.
-        static final double MIN_DISTANCE_FOR_BEARING_IN = 4.0;
-        static final double CELL_POSITION_SMOOTHING_ALPHA = 0.25;
+        // Webcam
+        public static int WEBCAM_WIDTH = 640;
+        public static int WEBCAM_HEIGHT = 480;
+        public static OpenCvCameraRotation WEBCAM_ROTATION = OpenCvCameraRotation.UPRIGHT;
+        public static double WEBCAM_HORIZONTAL_FOV_DEG = 60.0;
 
-        // [CALIBRATE] Blob approach. Area is image percentage, NOT a calibrated distance.
-        static final double BLOB_STOP_AREA_PERCENT = 4.0;
-        static final double BLOB_FORWARD_KP = 0.055;
-        static final double BLOB_STRAFE_KP = 0.014;
-        static final double BLOB_CENTER_TOLERANCE_DEG = 2.5;
+        // HSV Blob Thresholds
+        public static int HSV_H_MIN = 20;
+        public static int HSV_H_MAX = 38;
+        public static int HSV_S_MIN = 80;
+        public static int HSV_S_MAX = 255;
+        public static int HSV_V_MIN = 60;
+        public static int HSV_V_MAX = 255;
+        public static double MIN_BLOB_AREA_PX = 350.0;
 
-        // [TUNE] Timeouts and telemetry cadence in milliseconds.
-        static final long TARGET_STATE_TIMEOUT_MS = 1500;
-        static final long VISION_LOSS_TIMEOUT_MS = 700;
-        static final int TELEMETRY_INTERVAL_MS = 50;
+        // Drive caps
+        public static double STICK_DEADZONE = 0.16;
+        public static double MAX_AUTO_TRANSLATION = 0.20;
+        public static double MAX_AUTO_TURN = 0.12;
+
+        // PID & Align Tuning
+        public static double TARGET_STANDOFF_IN = 36.0;
+        public static double POSITION_KP = 0.025;
+        public static double HEADING_KP = 0.012;
+        public static double POSITION_TOLERANCE_IN = 2.5;
+        public static double HEADING_TOLERANCE_DEG = 3.0;
+
+        public static double CAMERA_TAG_ROLL_OFFSET_DEG = 0.0;
+        public static double CELL_UPRIGHT_ROLL_LIMIT_DEG = 90.0;
+        public static double MIN_DISTANCE_FOR_BEARING_IN = 4.0;
+        public static double CELL_POSITION_SMOOTHING_ALPHA = 0.25;
+
+        public static double BLOB_STOP_AREA_PERCENT = 4.0;
+        public static double BLOB_FORWARD_KP = 0.055;
+        public static double BLOB_STRAFE_KP = 0.014;
+        public static double BLOB_CENTER_TOLERANCE_DEG = 2.5;
+
+        public static long TARGET_STATE_TIMEOUT_MS = 1500;
+        public static long VISION_LOSS_TIMEOUT_MS = 700;
+        public static int TELEMETRY_INTERVAL_MS = 50;
     }
 
     // ------------------------------ Hardware ------------------------------
@@ -161,7 +152,7 @@ public class BioBuzzFieldCentricTeleOp extends LinearOpMode {
     private DcMotor backRight;
     private GoBildaPinpointDriver pinpoint;
     private Limelight3A limelight;
-    private OpenCvCamera webcam;
+    private OpenCvWebcam webcam;
     private final WebcamBlobPipeline webcamBlobPipeline = new WebcamBlobPipeline();
     private volatile BlobTarget latestWebcamBlob;
     private volatile long latestWebcamBlobMs = 0;
@@ -184,6 +175,19 @@ public class BioBuzzFieldCentricTeleOp extends LinearOpMode {
     private boolean blobApproachActive = false;
     private boolean previousA = false;
     private boolean previousB = false;
+    private boolean previousY = false;
+    private boolean previousOptions = false;
+
+    private double fieldHeadingOffsetDeg = 0.0;
+
+    private double lastXOffset = Double.NaN;
+    private double lastYOffset = Double.NaN;
+    private boolean lastXEncoderRev = false;
+    private boolean lastYEncoderRev = false;
+
+    private boolean lastManualExposure = false;
+    private long lastExposureMs = -1;
+    private int lastGain = -1;
 
     private long lastAlignTagSeenMs = 0;
     private long lastBlobSeenMs = 0;
@@ -201,26 +205,35 @@ public class BioBuzzFieldCentricTeleOp extends LinearOpMode {
 
         limelight.setPollRateHz(Config.LIMELIGHT_POLL_RATE_HZ);
         limelight.start();
-        // Do not switch Limelight pipelines: it continuously observes AprilTags while
-        // the Logitech webcam independently runs the OpenCV blob detector.
         limelight.pipelineSwitch(Config.APRILTAG_PIPELINE);
         initializeWebcam();
 
+        telemetry = new MultipleTelemetry(telemetry, FtcDashboard.getInstance().getTelemetry());
         telemetry.setMsTransmissionInterval(Config.TELEMETRY_INTERVAL_MS);
-        telemetry.addLine("BIOBUZZ Field-Centric Vision TeleOp");
-        telemetry.addLine("Check hardware names, Pinpoint offsets, starting pose, camera pose, and pipeline indices.");
-        telemetry.addData("Alliance target", Config.RED_ALLIANCE ? "RED cells (IDs 30-37)" : "BLUE cells (IDs 38-45)");
-        telemetry.addData("Starting pose", "X %.1f in, Y %.1f in, H %.1f deg",
-                Config.START_X_IN, Config.START_Y_IN, Config.START_HEADING_DEG);
-        telemetry.addLine("A = AprilTag align; B = blob approach; stick input cancels assist.");
-        telemetry.addData("Auto align enabled", Config.ENABLE_APRILTAG_AUTO_ALIGN);
-        telemetry.addData("Blob approach enabled", Config.ENABLE_BLOB_AUTO_APPROACH);
-        telemetry.update();
 
-        waitForStart();
+        fieldHeadingOffsetDeg = Config.START_HEADING_DEG;
+
+        boolean previousInitX = false;
+
+        while (!isStarted() && !isStopRequested()) {
+            boolean pressedX = gamepad1.x && !previousInitX;
+            if (pressedX) {
+                Config.RED_ALLIANCE = !Config.RED_ALLIANCE;
+            }
+            previousInitX = gamepad1.x;
+
+            updatePinpointConfigIfNeeded();
+            updateWebcamExposureIfNeeded();
+            pinpoint.update();
+            updateInitTelemetry();
+            sleep(20);
+        }
 
         while (opModeIsActive()) {
             long now = System.currentTimeMillis();
+
+            updatePinpointConfigIfNeeded();
+            updateWebcamExposureIfNeeded();
 
             // Pinpoint must be updated once per loop before reading its new values.
             pinpoint.update();
@@ -255,7 +268,9 @@ public class BioBuzzFieldCentricTeleOp extends LinearOpMode {
                 runBlobApproach(blobTarget, now);
             } else {
                 runFieldCentricDrive(robotHeadingDeg);
-                assistStatus = manualOverride ? "MANUAL DRIVE" : "READY";
+                if (!assistStatus.startsWith("MOTOR TEST")) {
+                    assistStatus = manualOverride ? "MANUAL DRIVE" : "READY";
+                }
             }
 
             updateTelemetry(now, robotX, robotY, robotHeadingDeg, bestAllianceTag, blobTarget);
@@ -276,12 +291,6 @@ public class BioBuzzFieldCentricTeleOp extends LinearOpMode {
         backLeft = hardwareMap.get(DcMotor.class, Config.BACK_LEFT_NAME);
         backRight = hardwareMap.get(DcMotor.class, Config.BACK_RIGHT_NAME);
 
-        // Common mirrored mecanum setup; change directions if the wheels do not all push forward.
-        frontLeft.setDirection(Config.FRONT_LEFT_DIRECTION);
-        backLeft.setDirection(Config.BACK_LEFT_DIRECTION);
-        frontRight.setDirection(Config.FRONT_RIGHT_DIRECTION);
-        backRight.setDirection(Config.BACK_RIGHT_DIRECTION);
-
         frontLeft.setZeroPowerBehavior(DcMotor.ZeroPowerBehavior.BRAKE);
         frontRight.setZeroPowerBehavior(DcMotor.ZeroPowerBehavior.BRAKE);
         backLeft.setZeroPowerBehavior(DcMotor.ZeroPowerBehavior.BRAKE);
@@ -293,12 +302,15 @@ public class BioBuzzFieldCentricTeleOp extends LinearOpMode {
 
     private void initializeWebcam() {
         WebcamName webcamName = hardwareMap.get(WebcamName.class, Config.WEBCAM_NAME);
-        webcam = OpenCvCameraFactory.getInstance().createWebcam(webcamName);
+        int cameraMonitorViewId = hardwareMap.appContext.getResources().getIdentifier(
+                "cameraMonitorViewId", "id", hardwareMap.appContext.getPackageName());
+        webcam = OpenCvCameraFactory.getInstance().createWebcam(webcamName, cameraMonitorViewId);
         webcam.setPipeline(webcamBlobPipeline);
         webcam.openCameraDeviceAsync(new OpenCvCamera.AsyncCameraOpenListener() {
             @Override
             public void onOpened() {
                 webcam.startStreaming(Config.WEBCAM_WIDTH, Config.WEBCAM_HEIGHT, Config.WEBCAM_ROTATION);
+                FtcDashboard.getInstance().startCameraStream(webcam, 30);
                 webcamReady = true;
                 webcamStatus = "STREAMING " + Config.WEBCAM_WIDTH + "x" + Config.WEBCAM_HEIGHT;
             }
@@ -314,10 +326,11 @@ public class BioBuzzFieldCentricTeleOp extends LinearOpMode {
     private void configurePinpoint() {
         pinpoint.setOffsets(Config.PINPOINT_X_POD_OFFSET_MM, Config.PINPOINT_Y_POD_OFFSET_MM, DistanceUnit.MM);
         pinpoint.setEncoderResolution(Config.ODOMETRY_POD_TYPE);
-        pinpoint.setEncoderDirections(Config.X_ENCODER_DIRECTION, Config.Y_ENCODER_DIRECTION);
+        pinpoint.setEncoderDirections(
+                Config.REVERSE_X_ENCODER ? GoBildaPinpointDriver.EncoderDirection.REVERSED : GoBildaPinpointDriver.EncoderDirection.FORWARD,
+                Config.REVERSE_Y_ENCODER ? GoBildaPinpointDriver.EncoderDirection.REVERSED : GoBildaPinpointDriver.EncoderDirection.FORWARD
+        );
 
-        // This sets the Pinpoint's pose to the robot's actual field location at match start.
-        // The Pinpoint guide uses field origin at center; +X toward audience; +Y toward alliance.
         pinpoint.setPosition(new Pose2D(
                 DistanceUnit.INCH,
                 Config.START_X_IN,
@@ -325,11 +338,69 @@ public class BioBuzzFieldCentricTeleOp extends LinearOpMode {
                 AngleUnit.DEGREES,
                 Config.START_HEADING_DEG
         ));
+
+        lastXOffset = Config.PINPOINT_X_POD_OFFSET_MM;
+        lastYOffset = Config.PINPOINT_Y_POD_OFFSET_MM;
+        lastXEncoderRev = Config.REVERSE_X_ENCODER;
+        lastYEncoderRev = Config.REVERSE_Y_ENCODER;
+    }
+
+    private void updatePinpointConfigIfNeeded() {
+        if (pinpoint == null) return;
+        if (Config.PINPOINT_X_POD_OFFSET_MM != lastXOffset
+                || Config.PINPOINT_Y_POD_OFFSET_MM != lastYOffset
+                || Config.REVERSE_X_ENCODER != lastXEncoderRev
+                || Config.REVERSE_Y_ENCODER != lastYEncoderRev) {
+
+            pinpoint.setOffsets(Config.PINPOINT_X_POD_OFFSET_MM, Config.PINPOINT_Y_POD_OFFSET_MM, DistanceUnit.MM);
+            pinpoint.setEncoderDirections(
+                    Config.REVERSE_X_ENCODER ? GoBildaPinpointDriver.EncoderDirection.REVERSED : GoBildaPinpointDriver.EncoderDirection.FORWARD,
+                    Config.REVERSE_Y_ENCODER ? GoBildaPinpointDriver.EncoderDirection.REVERSED : GoBildaPinpointDriver.EncoderDirection.FORWARD
+            );
+
+            lastXOffset = Config.PINPOINT_X_POD_OFFSET_MM;
+            lastYOffset = Config.PINPOINT_Y_POD_OFFSET_MM;
+            lastXEncoderRev = Config.REVERSE_X_ENCODER;
+            lastYEncoderRev = Config.REVERSE_Y_ENCODER;
+        }
+    }
+
+    private void updateWebcamExposureIfNeeded() {
+        if (webcam == null) return;
+
+        try {
+            ExposureControl exposureControl = webcam.getExposureControl();
+            GainControl gainControl = webcam.getGainControl();
+
+            if (exposureControl != null && (Config.WEBCAM_MANUAL_EXPOSURE != lastManualExposure
+                    || Config.WEBCAM_EXPOSURE_MS != lastExposureMs
+                    || Config.WEBCAM_GAIN != lastGain)) {
+
+                if (Config.WEBCAM_MANUAL_EXPOSURE) {
+                    exposureControl.setMode(ExposureControl.Mode.Manual);
+                    exposureControl.setExposure(Config.WEBCAM_EXPOSURE_MS, TimeUnit.MILLISECONDS);
+                    if (gainControl != null) {
+                        int clampedGain = Math.min(gainControl.getMaxGain(), Math.max(gainControl.getMinGain(), Config.WEBCAM_GAIN));
+                        gainControl.setGain(clampedGain);
+                    }
+                } else {
+                    exposureControl.setMode(ExposureControl.Mode.ContinuousAuto);
+                }
+
+                lastManualExposure = Config.WEBCAM_MANUAL_EXPOSURE;
+                lastExposureMs = Config.WEBCAM_EXPOSURE_MS;
+                lastGain = Config.WEBCAM_GAIN;
+            }
+        } catch (Exception ignored) {
+            // Camera control unsupported on some devices
+        }
     }
 
     private void handleButtons(long now) {
         boolean pressedA = gamepad1.a && !previousA;
         boolean pressedB = gamepad1.b && !previousB;
+        boolean pressedY = gamepad1.y && !previousY;
+        boolean pressedOptions = (gamepad1.options || gamepad1.back) && !previousOptions;
 
         if (pressedA) {
             if (autoAlignActive) {
@@ -360,8 +431,16 @@ public class BioBuzzFieldCentricTeleOp extends LinearOpMode {
             }
         }
 
+        // Reset field-centric drive alignment to current robot heading when Y or Options/Back is pressed
+        if (pressedY || pressedOptions) {
+            fieldHeadingOffsetDeg = pinpoint.getHeading(AngleUnit.DEGREES);
+            assistStatus = "FIELD HEADING RESET TO CURRENT ORIENTATION";
+        }
+
         previousA = gamepad1.a;
         previousB = gamepad1.b;
+        previousY = gamepad1.y;
+        previousOptions = gamepad1.options || gamepad1.back;
     }
 
     private boolean hasManualStickInput() {
@@ -405,10 +484,6 @@ public class BioBuzzFieldCentricTeleOp extends LinearOpMode {
                 observation.tagCount++;
                 observation.areaSum += tag.getTargetArea();
 
-                // The tag cluster on the upward-facing BIOBUZZ cell should appear upright when
-                // the camera is aimed along the launcher direction. Limelight returns each tag
-                // separately, so use camera-space pose roll as a first-pass orientation signal.
-                // The sign convention must be validated on the real field/camera mount.
                 try {
                     Pose3D cameraTargetPose = tag.getTargetPoseCameraSpace();
                     if (cameraTargetPose != null && cameraTargetPose.getOrientation() != null) {
@@ -426,7 +501,6 @@ public class BioBuzzFieldCentricTeleOp extends LinearOpMode {
                         }
                     }
                 } catch (RuntimeException ignored) {
-                    // Keep cell state UNKNOWN if no usable orientation is available.
                 }
 
                 TagChoice oldChoice = bestTagForCell[cellIndex];
@@ -434,18 +508,14 @@ public class BioBuzzFieldCentricTeleOp extends LinearOpMode {
                     bestTagForCell[cellIndex] = new TagChoice(tag, cellIndex, tag.getTargetArea());
                 }
 
-                // TargetPoseRobotSpace requires correct Limelight robot-space mounting settings
-                // (LL Forward/Right/Up and Roll/Pitch/Yaw) and full 3D AprilTag tracking.
                 try {
                     Pose3D targetPose = tag.getTargetPoseRobotSpace();
                     if (targetPose != null && targetPose.getPosition() != null) {
                         Position relative = targetPose.getPosition().toUnit(DistanceUnit.INCH);
                         double targetForward = relative.x;
-                        double targetRight = relative.y; // Limelight robot-space convention: right is positive.
+                        double targetRight = relative.y;
                         double headingRad = Math.toRadians(robotHeadingDeg);
 
-                        // Pinpoint field axes: +X toward audience, +Y toward alliance.
-                        // Robot forward = (cos(h), sin(h)); robot right = (sin(h), -cos(h)).
                         double targetFieldX = robotX
                                 + targetForward * Math.cos(headingRad)
                                 + targetRight * Math.sin(headingRad);
@@ -460,13 +530,10 @@ public class BioBuzzFieldCentricTeleOp extends LinearOpMode {
                         }
                     }
                 } catch (RuntimeException ignored) {
-                    // If this result does not contain a usable 3D pose, keep the last known location.
                 }
             }
         }
 
-        // Update each cell's tag-location estimate. If multiple IDs in one cluster are visible,
-        // averaging reduces the offset from an individual AprilTag toward the cluster center.
         for (int i = 0; i < cells.length; i++) {
             CellObservation observation = observations[i];
             if (observation.tagCount > 0) {
@@ -482,9 +549,6 @@ public class BioBuzzFieldCentricTeleOp extends LinearOpMode {
             }
         }
 
-        // A visible tag alone does NOT prove that its cell is open: the opposing cell's tag
-        // can also be visible. The BIOBUZZ scoring cell is identified by tag-cluster orientation.
-        // Upright tag -> this cell is open; upside-down tag -> its partner is open.
         for (HiveTrack hive : hives) {
             int bestCandidate = -1;
             double bestConfidence = -1.0;
@@ -545,9 +609,6 @@ public class BioBuzzFieldCentricTeleOp extends LinearOpMode {
     }
 
     // ---------------------------- Blob approach ---------------------------
-
-    // Webcam blob target is produced asynchronously by WebcamBlobPipeline.
-    // It is independent of Limelight's AprilTag observations.
 
     private void runBlobApproach(BlobTarget target, long now) {
         if (target == null) {
@@ -616,7 +677,6 @@ public class BioBuzzFieldCentricTeleOp extends LinearOpMode {
                     ? Math.atan2(dy, dx)
                     : Math.toRadians(robotHeadingDeg);
 
-            // Capture a fixed goal at a tunable horizontal stand-off distance from the target.
             alignGoalXIn = targetX - Config.TARGET_STANDOFF_IN * Math.cos(bearingRad);
             alignGoalYIn = targetY - Config.TARGET_STANDOFF_IN * Math.sin(bearingRad);
             alignGoalHeadingDeg = normalizeDegrees(Math.toDegrees(bearingRad));
@@ -638,7 +698,6 @@ public class BioBuzzFieldCentricTeleOp extends LinearOpMode {
             return;
         }
 
-        // Proportional field-coordinate position control, converted to robot forward/right.
         double fieldXCommand = clip(errorX * Config.POSITION_KP,
                 -Config.MAX_AUTO_TRANSLATION, Config.MAX_AUTO_TRANSLATION);
         double fieldYCommand = clip(errorY * Config.POSITION_KP,
@@ -652,8 +711,6 @@ public class BioBuzzFieldCentricTeleOp extends LinearOpMode {
         double headingRad = Math.toRadians(robotHeadingDeg);
         double forward = fieldXCommand * Math.cos(headingRad) + fieldYCommand * Math.sin(headingRad);
         double strafeRight = fieldXCommand * Math.sin(headingRad) - fieldYCommand * Math.cos(headingRad);
-        // With the common mecanum wheel signs below, negative turn power corrects a positive
-        // counter-clockwise heading error. Verify this on blocks and reverse this sign if needed.
         double turn = clip(-headingError * Config.HEADING_KP, -Config.MAX_AUTO_TURN, Config.MAX_AUTO_TURN);
 
         setRobotDrive(forward, strafeRight, turn);
@@ -665,11 +722,38 @@ public class BioBuzzFieldCentricTeleOp extends LinearOpMode {
     // ------------------------------- Driving ------------------------------
 
     private void runFieldCentricDrive(double robotHeadingDeg) {
-        // Driver forward/right are relative to the heading specified for the starting pose,
-        // so pushing the stick up continues to mean "away from our starting wall".
+        // Individual Wheel Diagnostic Test Mode:
+        // Hold Right Bumper (RB) + D-Pad directions to spin individual wheels forward
+        if (gamepad1.right_bumper) {
+            double testPower = 0.35;
+            double fl = gamepad1.dpad_up ? testPower : 0.0;
+            double fr = gamepad1.dpad_right ? testPower : 0.0;
+            double bl = gamepad1.dpad_down ? testPower : 0.0;
+            double br = gamepad1.dpad_left ? testPower : 0.0;
+
+            if (fl != 0 || fr != 0 || bl != 0 || br != 0) {
+                if (Config.REVERSE_FRONT_LEFT) fl = -fl;
+                if (Config.REVERSE_FRONT_RIGHT) fr = -fr;
+                if (Config.REVERSE_BACK_LEFT) bl = -bl;
+                if (Config.REVERSE_BACK_RIGHT) br = -br;
+
+                frontLeft.setPower(fl);
+                frontRight.setPower(fr);
+                backLeft.setPower(bl);
+                backRight.setPower(br);
+
+                if (gamepad1.dpad_up) assistStatus = "MOTOR TEST: FRONT LEFT";
+                else if (gamepad1.dpad_right) assistStatus = "MOTOR TEST: FRONT RIGHT";
+                else if (gamepad1.dpad_down) assistStatus = "MOTOR TEST: BACK LEFT";
+                else if (gamepad1.dpad_left) assistStatus = "MOTOR TEST: BACK RIGHT";
+
+                return;
+            }
+        }
+
         double fieldRight = gamepad1.left_stick_x;
         double fieldForward = -gamepad1.left_stick_y;
-        double relativeHeading = Math.toRadians(normalizeDegrees(robotHeadingDeg - Config.START_HEADING_DEG));
+        double relativeHeading = Math.toRadians(normalizeDegrees(robotHeadingDeg - fieldHeadingOffsetDeg));
 
         double strafeRight = fieldRight * Math.cos(relativeHeading)
                 + fieldForward * Math.sin(relativeHeading);
@@ -685,6 +769,12 @@ public class BioBuzzFieldCentricTeleOp extends LinearOpMode {
         double fr = forward - strafeRight - turn;
         double bl = forward - strafeRight + turn;
         double br = forward + strafeRight - turn;
+
+        // Apply live motor direction toggles from Config / FTC Dashboard
+        if (Config.REVERSE_FRONT_LEFT) fl = -fl;
+        if (Config.REVERSE_FRONT_RIGHT) fr = -fr;
+        if (Config.REVERSE_BACK_LEFT) bl = -bl;
+        if (Config.REVERSE_BACK_RIGHT) br = -br;
 
         double max = Math.max(1.0, Math.max(Math.max(Math.abs(fl), Math.abs(fr)),
                 Math.max(Math.abs(bl), Math.abs(br))));
@@ -703,66 +793,97 @@ public class BioBuzzFieldCentricTeleOp extends LinearOpMode {
 
     // ------------------------------ Telemetry -----------------------------
 
+    private void updateInitTelemetry() {
+        telemetry.addLine("=== BIOBUZZ TELEOP INITIALIZATION ===");
+        telemetry.addData("Alliance Target", Config.RED_ALLIANCE ? "RED Cells (IDs 30-37)" : "BLUE Cells (IDs 38-45)");
+        telemetry.addData("Start Pose", "X: %.1f in | Y: %.1f in | H: %.1f°",
+                Config.START_X_IN, Config.START_Y_IN, Config.START_HEADING_DEG);
+        telemetry.addData("Auto Align", Config.ENABLE_APRILTAG_AUTO_ALIGN ? "ENABLED" : "DISABLED (Config toggle)");
+        telemetry.addData("Blob Approach", Config.ENABLE_BLOB_AUTO_APPROACH ? "ENABLED" : "DISABLED (Config toggle)");
+
+        telemetry.addLine("\n--- SENSOR STATUS ---");
+        telemetry.addData("Limelight 3A", limelight.isConnected()
+                ? String.format(Locale.US, "CONNECTED (Pipe %d)", Config.APRILTAG_PIPELINE)
+                : "DISCONNECTED");
+        telemetry.addData("Logitech Webcam", webcamStatus);
+        telemetry.addData("Pinpoint Odometry", "X: %.1f in | Y: %.1f in | H: %.1f°",
+                pinpoint.getPosX(DistanceUnit.INCH),
+                pinpoint.getPosY(DistanceUnit.INCH),
+                pinpoint.getHeading(AngleUnit.DEGREES));
+
+        telemetry.addLine("\n--- CONTROLS ---");
+        telemetry.addLine("  [X Button] Toggle Alliance Color (Press during INIT)");
+        telemetry.addLine("  [A] AprilTag Auto Align | [B] Blob Approach");
+        telemetry.addLine("  [Y / Options] Reset Field Driving Heading");
+        telemetry.addLine("  [RB + D-Pad] Wheel Direction Test Mode");
+        telemetry.addLine("  [Sticks] Manual Field-Centric Drive / Cancel Assist");
+        telemetry.update();
+    }
+
     private void updateTelemetry(long now,
                                  double robotX,
                                  double robotY,
                                  double robotHeadingDeg,
                                  TagChoice bestAllianceTag,
                                  BlobTarget blobTarget) {
-        telemetry.addData("Mode", assistStatus);
+        // --- SECTION 1: STATUS & DRIVE MODE ---
+        telemetry.addLine("=== SYSTEM & DRIVE ===");
+        telemetry.addData("Drive Mode", assistStatus);
         telemetry.addData("Alliance", Config.RED_ALLIANCE ? "RED" : "BLUE");
-        telemetry.addData("Limelight connected", limelight.isConnected());
-        telemetry.addData("Limelight pipeline", "AprilTag %d (continuous)", Config.APRILTAG_PIPELINE);
-        telemetry.addData("Logitech webcam", webcamStatus);
-        telemetry.addData("Pinpoint X/Y", "%.1f / %.1f in", robotX, robotY);
-        telemetry.addData("Pinpoint heading", "%.1f deg", robotHeadingDeg);
+        telemetry.addData("Heading Baseline", "%.1f° (Relative H: %.1f°)",
+                fieldHeadingOffsetDeg, normalizeDegrees(robotHeadingDeg - fieldHeadingOffsetDeg));
+
+        // --- SECTION 2: ROBOT POSE (PINPOINT ODOMETRY) ---
+        telemetry.addLine("\n=== ROBOT POSE ===");
+        telemetry.addData("Position", "X: %6.1f in | Y: %6.1f in", robotX, robotY);
+        telemetry.addData("Heading", "%6.1f°", robotHeadingDeg);
+        telemetry.addData("Pod Offsets", "X: %.1f mm | Y: %.1f mm", Config.PINPOINT_X_POD_OFFSET_MM, Config.PINPOINT_Y_POD_OFFSET_MM);
+
+        // --- SECTION 3: VISION & TARGETS ---
+        telemetry.addLine("\n=== VISION & TARGETS ===");
+        telemetry.addData("Limelight", limelight.isConnected()
+                ? String.format(Locale.US, "CONNECTED (Pipe %d)", Config.APRILTAG_PIPELINE)
+                : "DISCONNECTED");
+        String exposureInfo = Config.WEBCAM_MANUAL_EXPOSURE
+                ? String.format(Locale.US, "MANUAL (%d ms, gain %d)", Config.WEBCAM_EXPOSURE_MS, Config.WEBCAM_GAIN)
+                : "AUTO";
+        telemetry.addData("Webcam", "%s [Exposure: %s]", webcamStatus, exposureInfo);
 
         if (bestAllianceTag != null) {
-            telemetry.addData("Visible alliance cell", "%s; tag %d; tx %.1f deg",
+            telemetry.addData("Tag Target", "%s (Tag #%d) [tx: %+.1f°]",
                     cells[bestAllianceTag.cellIndex].name,
                     bestAllianceTag.result.getFiducialId(),
                     bestAllianceTag.result.getTargetXDegrees());
         } else {
-            telemetry.addData("Visible alliance cell", "none in current frame");
+            telemetry.addData("Tag Target", "None in view");
         }
 
         if (blobTarget != null) {
-            telemetry.addData("Game element", "%s; tx %.1f deg; area %.2f%%",
+            telemetry.addData("Blob Target", "%s [tx: %+.1f°, area: %.2f%%]",
                     blobTarget.label, blobTarget.txDegrees, blobTarget.areaPercent);
+        } else {
+            telemetry.addData("Blob Target", "None in view");
         }
 
+        // --- SECTION 4: CELL TRACKING ---
+        telemetry.addLine("\n=== CELL TRACKING ===");
         for (int i = 0; i < cells.length; i++) {
             CellTrack cell = cells[i];
-            String location = cell.hasFieldEstimate
-                    ? String.format(Locale.US, "X %.1f, Y %.1f in", cell.fieldXIn, cell.fieldYIn)
-                    : "no 3D location estimate yet";
-            String positionAge = cell.lastPositionUpdateMs > 0
-                    ? String.format(Locale.US, "%.1f s old", (now - cell.lastPositionUpdateMs) / 1000.0)
-                    : "never observed";
-            String rollInfo = cell.lastRollUpdateMs > 0
-                    ? String.format(Locale.US, "%.1f deg (%s)", cell.lastRollDeg,
-                    Math.abs(normalizeDegrees(cell.lastRollDeg - Config.CAMERA_TAG_ROLL_OFFSET_DEG))
-                            < Config.CELL_UPRIGHT_ROLL_LIMIT_DEG ? "upright" : "inverted")
-                    : "unavailable";
-            telemetry.addData(cell.name,
-                    "%s | %s | tag roll: %s | location: %s (%s)",
-                    getCellState(i, now),
-                    tagIdRangeForCell(i),
-                    rollInfo,
-                    location,
-                    positionAge);
+            String state = getCellState(i, now);
+
+            String info;
+            if (cell.hasFieldEstimate) {
+                double ageSec = cell.lastPositionUpdateMs > 0 ? (now - cell.lastPositionUpdateMs) / 1000.0 : 0.0;
+                info = String.format(Locale.US, "[%-7s] X: %5.1f, Y: %5.1f  (%.1fs ago)",
+                        state, cell.fieldXIn, cell.fieldYIn, ageSec);
+            } else {
+                info = String.format(Locale.US, "[%-7s] No location estimate", state);
+            }
+
+            telemetry.addData(cell.name, info);
         }
 
-        telemetry.addLine("A = Limelight shooting alignment; B = Logitech OpenCV blob approach; stick input cancels.");
-        telemetry.addLine("Cell state is based on fresh tag observations; OPEN/CLOSED becomes UNKNOWN when stale.");
         telemetry.update();
-    }
-
-    private String tagIdRangeForCell(int index) {
-        if (index < 0 || index >= Config.CELL_TAG_ID_MIN.length) {
-            return "unknown IDs";
-        }
-        return "IDs " + Config.CELL_TAG_ID_MIN[index] + "-" + Config.CELL_TAG_ID_MAX[index];
     }
 
     private static double clip(double value, double low, double high) {
@@ -813,7 +934,6 @@ public class BioBuzzFieldCentricTeleOp extends LinearOpMode {
                 fieldYIn = y;
                 hasFieldEstimate = true;
             } else {
-                // Smooth noisy per-frame vision estimates.
                 final double alpha = Config.CELL_POSITION_SMOOTHING_ALPHA;
                 fieldXIn = alpha * x + (1.0 - alpha) * fieldXIn;
                 fieldYIn = alpha * y + (1.0 - alpha) * fieldYIn;
@@ -865,7 +985,6 @@ public class BioBuzzFieldCentricTeleOp extends LinearOpMode {
 
         @Override
         public Mat processFrame(Mat input) {
-            // EasyOpenCV supplies RGBA by default; convert RGBA -> RGB -> HSV.
             Imgproc.cvtColor(input, rgb, Imgproc.COLOR_RGBA2RGB);
             Imgproc.cvtColor(rgb, hsv, Imgproc.COLOR_RGB2HSV);
             Core.inRange(hsv, lower, upper, mask);
