@@ -25,6 +25,7 @@ import org.openftc.easyopencv.OpenCvCameraRotation;
 import org.openftc.easyopencv.OpenCvPipeline;
 import org.openftc.easyopencv.OpenCvWebcam;
 import org.opencv.core.Core;
+import org.opencv.core.CvType;
 import org.opencv.core.Mat;
 import org.opencv.core.MatOfPoint;
 import org.opencv.core.Rect;
@@ -32,6 +33,7 @@ import org.opencv.core.Scalar;
 import org.opencv.imgproc.Imgproc;
 
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
 import java.util.Locale;
 import java.util.concurrent.TimeUnit;
@@ -43,7 +45,7 @@ import java.util.concurrent.TimeUnit;
  *  - Sticks: field-centric mecanum drive
  *  - Y / Options: re-zero field heading
  *  - A: AprilTag align to one of YOUR alliance's HIVE CELLS (toggle, sticks cancel it)
- *  - B: drive toward the yellow POLLEN (toggle, sticks cancel it)
+ *  - B: drive to the biggest group of yellow balls seen by Webcam 1 (toggle, sticks cancel it)
  *  - X (during init): switch RED / BLUE alliance
  *  - RB + D-Pad: single-wheel direction test
  *
@@ -126,18 +128,31 @@ public class BASE extends LinearOpMode {
         public static double POSITION_TOLERANCE_IN = 2.0;
         public static double HEADING_TOLERANCE_DEG = 2.0;
 
-        // ---------- Yellow POLLEN blob (webcam) ----------
+        // ---------- Yellow ball detection (Logitech webcam, "Webcam 1") ----------
+        // HSV colors: tune on the Dashboard camera stream. Turn SHOW_BALL_MASK on to see what counts as yellow.
         public static int HSV_H_MIN = 20;
         public static int HSV_H_MAX = 38;
         public static int HSV_S_MIN = 80;
         public static int HSV_S_MAX = 255;
         public static int HSV_V_MIN = 60;
         public static int HSV_V_MAX = 255;
-        public static double MIN_BLOB_AREA_PX = 350.0;
-        public static double BLOB_STOP_AREA_PERCENT = 4.0;
-        public static double BLOB_FORWARD_KP = 0.055;
-        public static double BLOB_STRAFE_KP = 0.014;
-        public static double BLOB_CENTER_TOLERANCE_DEG = 2.5;
+        public static boolean SHOW_BALL_MASK = false;       // true = camera stream shows white where it sees yellow
+        public static double MIN_BALL_AREA_PX = 40.0;       // smallest yellow blob that counts (in a 320x240 image)
+        public static double CLUSTER_DIST_DIAMETERS = 3.0;  // balls closer than this many ball-widths = same group
+        public static double WEBCAM_HFOV_DEG = 60.0;        // webcam field of view (C270 is about 60)
+
+        // ---------- Ball approach (B button) ----------
+        public static boolean BALL_CAMERA_ON_BACK = true;   // true = camera faces the robot's back, so it drives in reverse
+        public static boolean REVERSE_BALL_TURN = false;    // flip if it turns AWAY from the balls
+        public static double BALL_STOP_Y_FRACTION = 0.75;   // stops when the group's bottom reaches this height in the image (0 = top, 1 = bottom)
+        public static double BALL_FORWARD_KP = 0.6;         // drive power per image-height error
+        public static double BALL_TURN_KP = 0.012;          // turn power per degree off-center
+        public static double BALL_CENTER_TOLERANCE_DEG = 3.0;
+        public static double BALL_MAX_SPEED = 0.20;         // top driving speed toward the balls
+        public static double MIN_BALL_FORWARD = 0.10;       // slowest driving speed toward the balls
+        public static double BALL_MAX_TURN = 0.12;          // top turning speed toward the balls
+        public static double BALL_MIN_TURN = 0.08;          // slowest turning speed toward the balls
+        public static long BALL_TIMEOUT_MS = 6000;          // stops by itself after this long
     }
 
     // ---------- BIOBUZZ tag layout (from the game manual) ----------
@@ -155,10 +170,10 @@ public class BASE extends LinearOpMode {
     private OpenCvWebcam webcam;
     private VoltageSensor batteryVoltageSensor;
 
-    // ---------- Webcam blob ----------
-    private final WebcamBlobPipeline webcamBlobPipeline = new WebcamBlobPipeline();
-    private volatile BlobTarget latestWebcamBlob;
-    private volatile long latestWebcamBlobMs = 0;
+    // ---------- Webcam ball detection ----------
+    private final BallPipeline ballPipeline = new BallPipeline();
+    private volatile BallTarget latestBalls;
+    private volatile long latestBallsMs = 0;
     private volatile String webcamStatus = "NOT INITIALIZED";
 
     // ---------- State ----------
@@ -179,6 +194,8 @@ public class BASE extends LinearOpMode {
     private String tagDebug = "";
     private boolean alignTagSeen = false;
     private long alignStartMs = 0;
+    private boolean ballSeen = false;
+    private long ballStartMs = 0;
     private String alignDebug = "";
     private long lastAlignTagSeenMs = 0, lastBlobSeenMs = 0;
 
@@ -248,13 +265,13 @@ public class BASE extends LinearOpMode {
             }
 
             TagView tagView = readAprilTags();
-            BlobTarget blobTarget = (latestWebcamBlob != null && now - latestWebcamBlobMs <= 700)
-                    ? latestWebcamBlob : null;
+            BallTarget ballTarget = (latestBalls != null && now - latestBallsMs <= 700)
+                    ? latestBalls : null;
 
             if (autoAlignActive) {
                 runAprilTagAlign(tagView, now);
             } else if (blobApproachActive) {
-                runBlobApproach(blobTarget, now);
+                runBallApproach(ballTarget, now);
             } else {
                 boolean wheelTest = runFieldCentricDrive(robotHeadingDeg);
                 if (!wheelTest && !assistStatus.equals("HEADING RE-ZEROED")) {
@@ -262,7 +279,7 @@ public class BASE extends LinearOpMode {
                 }
             }
 
-            updateTelemetry(robotX, robotY, robotHeadingDeg, tagView, blobTarget);
+            updateTelemetry(robotX, robotY, robotHeadingDeg, tagView, ballTarget);
             idle();
         }
 
@@ -319,7 +336,7 @@ public class BASE extends LinearOpMode {
             int cameraMonitorViewId = hardwareMap.appContext.getResources().getIdentifier(
                     "cameraMonitorViewId", "id", hardwareMap.appContext.getPackageName());
             webcam = OpenCvCameraFactory.getInstance().createWebcam(webcamName, cameraMonitorViewId);
-            webcam.setPipeline(webcamBlobPipeline);
+            webcam.setPipeline(ballPipeline);
             webcam.openCameraDeviceAsync(new OpenCvCamera.AsyncCameraOpenListener() {
                 @Override
                 public void onOpened() {
@@ -426,14 +443,16 @@ public class BASE extends LinearOpMode {
 
         if (pressedB) {
             if (blobApproachActive) {
-                cancelAssist("BLOB CANCELLED");
+                cancelAssist("BALL APPROACH CANCELLED");
             } else if (!Config.ENABLE_BLOB_AUTO_APPROACH) {
-                assistStatus = "BLOB DISABLED (Config)";
+                assistStatus = "BALL APPROACH DISABLED (Config)";
             } else {
                 autoAlignActive = false;
                 blobApproachActive = true;
+                ballSeen = false;
+                ballStartMs = now;
                 lastBlobSeenMs = now;
-                assistStatus = "LOOKING FOR POLLEN";
+                assistStatus = "LOOKING FOR BALLS";
             }
         }
 
@@ -729,32 +748,55 @@ public class BASE extends LinearOpMode {
     }
 
     // =====================================================================
-    // POLLEN BLOB APPROACH
+    // YELLOW BALL APPROACH
     // =====================================================================
 
-    private void runBlobApproach(BlobTarget target, long now) {
+    private void runBallApproach(BallTarget target, long now) {
+        if (now - ballStartMs > Config.BALL_TIMEOUT_MS) {
+            cancelAssist("BALL APPROACH TIMEOUT");
+            return;
+        }
         if (target == null) {
             stopDrive();
-            assistStatus = "POLLEN LOST";
-            if (now - lastBlobSeenMs > 700) cancelAssist("POLLEN LOST");
+            long timeoutMs = ballSeen ? 700 : 3000;
+            assistStatus = ballSeen ? "BALLS LOST - SEARCHING" : "NO BALLS YET - POINT CAMERA AT THEM";
+            if (now - lastBlobSeenMs > timeoutMs) {
+                cancelAssist(ballSeen ? "BALLS LOST" : "NO BALLS FOUND");
+            }
             return;
         }
+        ballSeen = true;
         lastBlobSeenMs = now;
 
-        if (target.areaPercent >= Config.BLOB_STOP_AREA_PERCENT
-                && Math.abs(target.txDegrees) <= Config.BLOB_CENTER_TOLERANCE_DEG) {
-            cancelAssist("POLLEN REACHED");
+        boolean centered = Math.abs(target.txDeg) <= Config.BALL_CENTER_TOLERANCE_DEG;
+        double yErr = Config.BALL_STOP_Y_FRACTION - target.yFraction; // > 0 means still too far away
+        boolean closeEnough = yErr <= 0.0;
+
+        if (centered && closeEnough) {
+            cancelAssist("AT BALLS (" + target.count + " in group)");
             return;
         }
 
-        double strafeRight = clip(target.txDegrees * Config.BLOB_STRAFE_KP,
-                -Config.MAX_AUTO_TRANSLATION, Config.MAX_AUTO_TRANSLATION);
-        double forward = clip((Config.BLOB_STOP_AREA_PERCENT - target.areaPercent) * Config.BLOB_FORWARD_KP,
-                0.0, Config.MAX_AUTO_TRANSLATION);
+        double turn = 0.0;
+        if (!centered) {
+            turn = clip(target.txDeg * Config.BALL_TURN_KP, -Config.BALL_MAX_TURN, Config.BALL_MAX_TURN);
+            turn = Math.copySign(Math.max(Math.abs(turn), Config.BALL_MIN_TURN), turn);
+            if (Config.REVERSE_BALL_TURN) turn = -turn;
+        }
 
-        setRobotDrive(forward, strafeRight, 0.0);
-        assistStatus = String.format(Locale.US, "POLLEN tx %.1f°, area %.1f%%",
-                target.txDegrees, target.areaPercent);
+        double drive = 0.0;
+        if (!closeEnough) {
+            drive = clip(yErr * Config.BALL_FORWARD_KP, 0.0, Config.BALL_MAX_SPEED);
+            // go slower while the group is far off to the side
+            drive *= 1.0 - 0.6 * Math.min(Math.abs(target.txDeg) / 20.0, 1.0);
+            drive = Math.max(drive, Config.MIN_BALL_FORWARD);
+        }
+
+        // The camera drives toward whatever it sees. On the back of the robot that means reverse.
+        double forward = Config.BALL_CAMERA_ON_BACK ? -drive : drive;
+        setRobotDrive(forward, 0.0, turn);
+        assistStatus = String.format(Locale.US, "BALLS: %d in group, tx %.1f°, height %.2f (stop at %.2f)",
+                target.count, target.txDeg, target.yFraction, Config.BALL_STOP_Y_FRACTION);
     }
 
     // =====================================================================
@@ -767,7 +809,7 @@ public class BASE extends LinearOpMode {
         telemetry.addData("Battery", "%.2f V %s", volts, volts < 12.0 ? "(LOW!)" : "(GOOD)");
         telemetry.addData("Alliance", Config.RED_ALLIANCE ? "RED (cell tags 30-37)" : "BLUE (cell tags 38-45)");
         telemetry.addData("Tag Align (A)", Config.ENABLE_APRILTAG_AUTO_ALIGN ? "ENABLED" : "DISABLED");
-        telemetry.addData("Pollen Approach (B)", Config.ENABLE_BLOB_AUTO_APPROACH ? "ENABLED" : "DISABLED");
+        telemetry.addData("Ball Approach (B)", Config.ENABLE_BLOB_AUTO_APPROACH ? "ENABLED" : "DISABLED");
 
         telemetry.addLine("--- SENSORS ---");
         telemetry.addData("Limelight", limelight != null && limelight.isConnected() ? "CONNECTED" : "DISCONNECTED");
@@ -779,13 +821,13 @@ public class BASE extends LinearOpMode {
                 : "DISCONNECTED");
 
         telemetry.addLine("--- CONTROLS ---");
-        telemetry.addLine("[X] Toggle alliance | [A] Align to cell | [B] Pollen");
+        telemetry.addLine("[X] Toggle alliance | [A] Align to cell | [B] Go to balls");
         telemetry.addLine("[Y / Options] Re-zero heading | [LB] Field/Robot-centric | [RB + D-Pad] Wheel test");
         telemetry.update();
     }
 
     private void updateTelemetry(double robotX, double robotY, double robotHeadingDeg,
-                                 TagView tag, BlobTarget blob) {
+                                 TagView tag, BallTarget ball) {
         double volts = batteryVoltageSensor != null ? batteryVoltageSensor.getVoltage() : 0.0;
         telemetry.addData("Mode", assistStatus);
         telemetry.addData("Drive", !Config.FIELD_CENTRIC ? "ROBOT-CENTRIC"
@@ -799,8 +841,9 @@ public class BASE extends LinearOpMode {
                 : "None");
         telemetry.addData("Tag Debug", tagDebug);
         telemetry.addData("Align Debug", alignDebug);
-        telemetry.addData("Pollen", blob != null
-                ? String.format(Locale.US, "tx %+.1f°, area %.1f%%", blob.txDegrees, blob.areaPercent)
+        telemetry.addData("Balls", ball != null
+                ? String.format(Locale.US, "%d in biggest group, tx %+.1f°, height %.2f",
+                ball.count, ball.txDeg, ball.yFraction)
                 : "None");
         telemetry.update();
     }
@@ -819,62 +862,169 @@ public class BASE extends LinearOpMode {
         return angle;
     }
 
-    private static class BlobTarget {
-        final String label;
-        final double txDegrees, areaPercent;
+    // ----- yellow ball detection -----
 
-        BlobTarget(String label, double txDegrees, double areaPercent) {
-            this.label = label;
-            this.txDegrees = txDegrees;
-            this.areaPercent = areaPercent;
+    private static class BallBlob {
+        double cx, cy, left, right, top, bottom, radius;
+        int count;
+    }
+
+    /** The biggest group of balls the camera sees. */
+    private static class BallTarget {
+        final int count;          // estimated number of balls in the group
+        final double txDeg;       // + means the group is to the right of the image center
+        final double yFraction;   // bottom of the group in the image: 0 = top, 1 = bottom (bigger = closer)
+
+        BallTarget(int count, double txDeg, double yFraction) {
+            this.count = count;
+            this.txDeg = txDeg;
+            this.yFraction = yFraction;
         }
     }
 
-    private class WebcamBlobPipeline extends OpenCvPipeline {
-        private final Mat rgb = new Mat(), hsv = new Mat(), mask = new Mat(), hierarchy = new Mat();
+    private static int findRoot(int[] parent, int i) {
+        while (parent[i] != i) {
+            parent[i] = parent[parent[i]];
+            i = parent[i];
+        }
+        return i;
+    }
+
+    private static boolean blobsNear(BallBlob a, BallBlob b) {
+        double gapX = Math.max(0.0, Math.max(a.left, b.left) - Math.min(a.right, b.right));
+        double gapY = Math.max(0.0, Math.max(a.top, b.top) - Math.min(a.bottom, b.bottom));
+        double limit = Config.CLUSTER_DIST_DIAMETERS * 2.0 * Math.max(a.radius, b.radius);
+        return Math.hypot(gapX, gapY) <= limit;
+    }
+
+    /**
+     * 1) Finds yellow blobs.  2) Estimates how many balls are in each blob (touching balls merge into one blob).
+     * 3) Joins nearby blobs into groups.  4) Picks the group with the most balls (closest wins a tie).
+     */
+    private class BallPipeline extends OpenCvPipeline {
+        private final Mat small = new Mat(), blurred = new Mat(), rgb = new Mat(), hsv = new Mat();
+        private final Mat mask = new Mat(), dist = new Mat(), hierarchy = new Mat(), noHierarchy = new Mat();
+        private final Mat maskUp = new Mat();
         private final Mat kernel = Imgproc.getStructuringElement(Imgproc.MORPH_RECT, new org.opencv.core.Size(3, 3));
         private final List<MatOfPoint> contours = new ArrayList<>();
+        private final double scale = 0.5; // work on a 320x240 copy to keep the loop fast
 
         @Override
         public Mat processFrame(Mat input) {
             try {
-                Imgproc.cvtColor(input, rgb, Imgproc.COLOR_RGBA2RGB);
+                Imgproc.resize(input, small, new org.opencv.core.Size(input.cols() * scale, input.rows() * scale),
+                        0, 0, Imgproc.INTER_AREA);
+                Imgproc.GaussianBlur(small, blurred, new org.opencv.core.Size(5, 5), 0);
+                Imgproc.cvtColor(blurred, rgb, Imgproc.COLOR_RGBA2RGB);
                 Imgproc.cvtColor(rgb, hsv, Imgproc.COLOR_RGB2HSV);
                 Core.inRange(hsv,
                         new Scalar(Config.HSV_H_MIN, Config.HSV_S_MIN, Config.HSV_V_MIN),
                         new Scalar(Config.HSV_H_MAX, Config.HSV_S_MAX, Config.HSV_V_MAX), mask);
-                Imgproc.erode(mask, mask, kernel, new org.opencv.core.Point(-1, -1), 1);
-                Imgproc.dilate(mask, mask, kernel, new org.opencv.core.Point(-1, -1), 2);
+                Imgproc.morphologyEx(mask, mask, Imgproc.MORPH_OPEN, kernel);
+                Imgproc.morphologyEx(mask, mask, Imgproc.MORPH_CLOSE, kernel);
+                Imgproc.distanceTransform(mask, dist, Imgproc.DIST_L2, 3);
 
                 contours.clear();
                 Imgproc.findContours(mask, contours, hierarchy, Imgproc.RETR_EXTERNAL, Imgproc.CHAIN_APPROX_SIMPLE);
 
-                double bestArea = 0.0;
-                Rect bestRect = null;
+                // ----- 1 + 2: blobs and ball counts -----
+                List<BallBlob> blobs = new ArrayList<>();
+                double frameArea = small.cols() * (double) small.rows();
                 for (MatOfPoint contour : contours) {
                     double area = Imgproc.contourArea(contour);
-                    if (area > bestArea) {
-                        bestArea = area;
-                        bestRect = Imgproc.boundingRect(contour);
+                    if (area >= Config.MIN_BALL_AREA_PX && area <= 0.3 * frameArea) {
+                        Rect rect = Imgproc.boundingRect(contour);
+
+                        // the biggest circle that fits inside the blob is about one ball's radius
+                        Mat roiDist = dist.submat(rect);
+                        Mat roiMask = Mat.zeros(rect.size(), CvType.CV_8UC1);
+                        Imgproc.drawContours(roiMask, Collections.singletonList(contour), 0, new Scalar(255), -1,
+                                Imgproc.LINE_8, noHierarchy, 0, new org.opencv.core.Point(-rect.x, -rect.y));
+                        Core.MinMaxLocResult mm = Core.minMaxLoc(roiDist, roiMask);
+                        roiDist.release();
+                        roiMask.release();
+
+                        double radius = Math.max(1.5, mm.maxVal);
+                        BallBlob blob = new BallBlob();
+                        blob.radius = radius;
+                        blob.count = (int) Math.max(1, Math.round(area / (Math.PI * radius * radius)));
+                        blob.left = rect.x;
+                        blob.right = rect.x + rect.width;
+                        blob.top = rect.y;
+                        blob.bottom = rect.y + rect.height;
+                        blob.cx = rect.x + rect.width / 2.0;
+                        blob.cy = rect.y + rect.height / 2.0;
+                        blobs.add(blob);
                     }
                     contour.release();
                 }
                 contours.clear();
 
-                if (bestRect != null && bestArea >= Config.MIN_BLOB_AREA_PX) {
-                    double centerX = bestRect.x + bestRect.width / 2.0;
-                    double imageCenterX = input.cols() / 2.0;
-                    double tx = ((centerX - imageCenterX) / imageCenterX) * 30.0;
-                    double areaPercent = 100.0 * bestArea / (input.cols() * (double) input.rows());
-                    latestWebcamBlob = new BlobTarget("Pollen", tx, areaPercent);
-                    latestWebcamBlobMs = System.currentTimeMillis();
-
-                    Imgproc.rectangle(input, bestRect, new Scalar(0, 255, 0), 2);
-                } else {
-                    latestWebcamBlob = null;
+                if (Config.SHOW_BALL_MASK) {
+                    Imgproc.resize(mask, maskUp, input.size());
+                    Imgproc.cvtColor(maskUp, input, Imgproc.COLOR_GRAY2RGBA);
                 }
-            } catch (Exception ignored) {
-                latestWebcamBlob = null;
+
+                int m = blobs.size();
+                if (m == 0) {
+                    latestBalls = null;
+                    return input;
+                }
+
+                // ----- 3: join nearby blobs into groups -----
+                int[] parent = new int[m];
+                for (int i = 0; i < m; i++) parent[i] = i;
+                for (int i = 0; i < m; i++) {
+                    for (int j = i + 1; j < m; j++) {
+                        if (blobsNear(blobs.get(i), blobs.get(j))) {
+                            int ri = findRoot(parent, i), rj = findRoot(parent, j);
+                            if (ri != rj) parent[ri] = rj;
+                        }
+                    }
+                }
+
+                int[] groupCount = new int[m];
+                double[] sumX = new double[m], bottom = new double[m];
+                for (int i = 0; i < m; i++) {
+                    BallBlob b = blobs.get(i);
+                    int root = findRoot(parent, i);
+                    groupCount[root] += b.count;
+                    sumX[root] += b.cx * b.count;
+                    bottom[root] = Math.max(bottom[root], b.bottom);
+                }
+
+                // ----- 4: biggest group wins, closest (lowest in the image) breaks ties -----
+                int best = -1;
+                for (int i = 0; i < m; i++) {
+                    if (groupCount[i] == 0) continue;
+                    if (best < 0 || groupCount[i] > groupCount[best]
+                            || (groupCount[i] == groupCount[best] && bottom[i] > bottom[best])) {
+                        best = i;
+                    }
+                }
+
+                double centerX = sumX[best] / groupCount[best];
+                double tx = ((centerX / small.cols()) - 0.5) * Config.WEBCAM_HFOV_DEG;
+                double yFraction = bottom[best] / small.rows();
+                latestBalls = new BallTarget(groupCount[best], tx, yFraction);
+                latestBallsMs = System.currentTimeMillis();
+
+                // ----- drawing on the camera stream -----
+                for (int i = 0; i < m; i++) {
+                    BallBlob b = blobs.get(i);
+                    boolean inBest = findRoot(parent, i) == best;
+                    Imgproc.rectangle(input,
+                            new org.opencv.core.Point(b.left / scale, b.top / scale),
+                            new org.opencv.core.Point(b.right / scale, b.bottom / scale),
+                            inBest ? new Scalar(0, 255, 0) : new Scalar(255, 255, 0), 2);
+                }
+                Imgproc.circle(input, new org.opencv.core.Point(centerX / scale, (bottom[best] - 10) / scale),
+                        10, new Scalar(255, 0, 0), 3);
+                Imgproc.putText(input, String.valueOf(groupCount[best]),
+                        new org.opencv.core.Point(centerX / scale + 14, (bottom[best] - 10) / scale),
+                        Imgproc.FONT_HERSHEY_SIMPLEX, 0.9, new Scalar(255, 0, 0), 2);
+            } catch (Exception e) {
+                latestBalls = null;
             }
             return input;
         }
