@@ -143,15 +143,18 @@ public class BASE extends LinearOpMode {
 
         // ---------- Ball approach (B button) ----------
         public static boolean BALL_CAMERA_ON_BACK = true;   // true = camera faces the robot's back, so it drives in reverse
-        public static boolean REVERSE_BALL_TURN = false;    // flip if it turns AWAY from the balls
+        public static boolean REVERSE_BALL_STRAFE = false;  // flip if it slides AWAY from the balls sideways
         public static double BALL_STOP_Y_FRACTION = 0.75;   // stops when the group's bottom reaches this height in the image (0 = top, 1 = bottom)
         public static double BALL_FORWARD_KP = 0.6;         // drive power per image-height error
-        public static double BALL_TURN_KP = 0.012;          // turn power per degree off-center
+        public static double BALL_STRAFE_KP = 0.02;         // sideways power per degree off-center
         public static double BALL_CENTER_TOLERANCE_DEG = 3.0;
         public static double BALL_MAX_SPEED = 0.20;         // top driving speed toward the balls
         public static double MIN_BALL_FORWARD = 0.10;       // slowest driving speed toward the balls
-        public static double BALL_MAX_TURN = 0.12;          // top turning speed toward the balls
-        public static double BALL_MIN_TURN = 0.08;          // slowest turning speed toward the balls
+        public static double BALL_MAX_STRAFE = 0.25;        // top sideways speed toward the balls
+        public static double BALL_MIN_STRAFE = 0.10;        // slowest sideways speed toward the balls
+        public static boolean BALL_HOLD_HEADING = true;     // keeps the robot facing the same way while it slides in (needs Pinpoint)
+        public static double BALL_HEADING_KP = 0.01;        // turn power per degree of heading drift
+        public static double BALL_MAX_TURN = 0.15;          // cap on the heading-hold turn
         public static long BALL_TIMEOUT_MS = 6000;          // stops by itself after this long
     }
 
@@ -195,6 +198,7 @@ public class BASE extends LinearOpMode {
     private boolean alignTagSeen = false;
     private long alignStartMs = 0;
     private boolean ballSeen = false;
+    private double ballHoldHeadingDeg = 0.0;
     private long ballStartMs = 0;
     private String alignDebug = "";
     private long lastAlignTagSeenMs = 0, lastBlobSeenMs = 0;
@@ -271,7 +275,7 @@ public class BASE extends LinearOpMode {
             if (autoAlignActive) {
                 runAprilTagAlign(tagView, now);
             } else if (blobApproachActive) {
-                runBallApproach(ballTarget, now);
+                runBallApproach(ballTarget, now, robotHeadingDeg);
             } else {
                 boolean wheelTest = runFieldCentricDrive(robotHeadingDeg);
                 if (!wheelTest && !assistStatus.equals("HEADING RE-ZEROED")) {
@@ -450,6 +454,7 @@ public class BASE extends LinearOpMode {
                 autoAlignActive = false;
                 blobApproachActive = true;
                 ballSeen = false;
+                ballHoldHeadingDeg = headingDeg();
                 ballStartMs = now;
                 lastBlobSeenMs = now;
                 assistStatus = "LOOKING FOR BALLS";
@@ -751,7 +756,7 @@ public class BASE extends LinearOpMode {
     // YELLOW BALL APPROACH
     // =====================================================================
 
-    private void runBallApproach(BallTarget target, long now) {
+    private void runBallApproach(BallTarget target, long now, double robotHeadingDeg) {
         if (now - ballStartMs > Config.BALL_TIMEOUT_MS) {
             cancelAssist("BALL APPROACH TIMEOUT");
             return;
@@ -777,24 +782,33 @@ public class BASE extends LinearOpMode {
             return;
         }
 
-        double turn = 0.0;
+        // Mecanum: slide sideways to center on the balls AND drive toward them at the same time (diagonal).
+        double strafe = 0.0;
         if (!centered) {
-            turn = clip(target.txDeg * Config.BALL_TURN_KP, -Config.BALL_MAX_TURN, Config.BALL_MAX_TURN);
-            turn = Math.copySign(Math.max(Math.abs(turn), Config.BALL_MIN_TURN), turn);
-            if (Config.REVERSE_BALL_TURN) turn = -turn;
+            strafe = clip(target.txDeg * Config.BALL_STRAFE_KP, -Config.BALL_MAX_STRAFE, Config.BALL_MAX_STRAFE);
+            strafe = Math.copySign(Math.max(Math.abs(strafe), Config.BALL_MIN_STRAFE), strafe);
         }
 
         double drive = 0.0;
         if (!closeEnough) {
             drive = clip(yErr * Config.BALL_FORWARD_KP, 0.0, Config.BALL_MAX_SPEED);
-            // go slower while the group is far off to the side
-            drive *= 1.0 - 0.6 * Math.min(Math.abs(target.txDeg) / 20.0, 1.0);
             drive = Math.max(drive, Config.MIN_BALL_FORWARD);
         }
 
-        // The camera drives toward whatever it sees. On the back of the robot that means reverse.
+        // The camera looks the way the balls are. On the back of the robot, that is reverse, and the
+        // camera's right side is the robot's left side, so strafe flips too.
         double forward = Config.BALL_CAMERA_ON_BACK ? -drive : drive;
-        setRobotDrive(forward, 0.0, turn);
+        double strafeRight = Config.BALL_CAMERA_ON_BACK ? -strafe : strafe;
+        if (Config.REVERSE_BALL_STRAFE) strafeRight = -strafeRight;
+
+        // Keep the robot pointing the same way as it slides in (like a swerve drive)
+        double turn = 0.0;
+        if (Config.BALL_HOLD_HEADING && pinpoint != null) {
+            double headingError = normalizeDegrees(ballHoldHeadingDeg - robotHeadingDeg); // + = need to turn CCW
+            turn = clip(-headingError * Config.BALL_HEADING_KP, -Config.BALL_MAX_TURN, Config.BALL_MAX_TURN);
+        }
+
+        setRobotDrive(forward, strafeRight, turn);
         assistStatus = String.format(Locale.US, "BALLS: %d in group, tx %.1f°, height %.2f (stop at %.2f)",
                 target.count, target.txDeg, target.yFraction, Config.BALL_STOP_Y_FRACTION);
     }
