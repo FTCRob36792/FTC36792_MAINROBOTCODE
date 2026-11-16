@@ -29,6 +29,7 @@ import org.opencv.core.Core;
 import org.opencv.core.CvType;
 import org.opencv.core.Mat;
 import org.opencv.core.MatOfPoint;
+import org.opencv.core.Point;
 import org.opencv.core.Rect;
 import org.opencv.core.Scalar;
 import org.opencv.imgproc.Imgproc;
@@ -216,6 +217,7 @@ public class BASE_Debug extends LinearOpMode {
     private double fieldHeadingOffsetDeg = 0.0;
     private double lastXOffset = Double.NaN, lastYOffset = Double.NaN;
     private boolean lastXEncoderRev = false, lastYEncoderRev = false;
+    private int lastLimelightPipeline = -1;
 
     private boolean lastManualExposure = false;
     private long lastExposureMs = -1;
@@ -228,7 +230,6 @@ public class BASE_Debug extends LinearOpMode {
     private int lockedAlignTagId = -1;
     private double alignHoldHeadingDeg = 0.0;
     private double alignLastErrF = 0.0, alignLastErrR = 0.0;
-    private double alignLastSeenX = 0.0, alignLastSeenY = 0.0;
     private double alignTargetFieldX = 0.0, alignTargetFieldY = 0.0;
     private double alignMinErr = Double.MAX_VALUE;
     private double alignStartErr = -1.0;
@@ -251,7 +252,7 @@ public class BASE_Debug extends LinearOpMode {
         boolean red = allianceLocked ? lockedRed : Config.RED_ALLIANCE;
         return (Config.BLUE_MIRRORS_SIDE && !red) ? -Config.ALIGN_TARGET_RIGHT_IN : Config.ALIGN_TARGET_RIGHT_IN;
     }
-    private long lastAlignTagSeenMs = 0, lastBlobSeenMs = 0;
+    private long lastBlobSeenMs = 0;
 
     /** Robot heading in degrees (counter-clockwise positive), flipped if REVERSE_HEADING is on. */
     private double headingDeg() {
@@ -271,6 +272,7 @@ public class BASE_Debug extends LinearOpMode {
             limelight.setPollRateHz(100);
             limelight.pipelineSwitch(Config.APRILTAG_PIPELINE);
             limelight.start();
+            lastLimelightPipeline = Config.APRILTAG_PIPELINE;
         }
         initializeWebcam();
 
@@ -293,6 +295,7 @@ public class BASE_Debug extends LinearOpMode {
             previousLeftBumper = gamepad1.dpad_left;
 
             updatePinpointConfigIfNeeded();
+            updateLimelightConfigIfNeeded();
             updateWebcamExposureIfNeeded();
             updateInitIndicatorLight(System.currentTimeMillis() - initLightStartMs);
             if (pinpoint != null) {
@@ -313,6 +316,7 @@ public class BASE_Debug extends LinearOpMode {
             long now = System.currentTimeMillis();
 
             updatePinpointConfigIfNeeded();
+            updateLimelightConfigIfNeeded();
             updateWebcamExposureIfNeeded();
             updateTeleOpIndicatorLight();
 
@@ -503,6 +507,14 @@ public class BASE_Debug extends LinearOpMode {
         }
     }
 
+    private void updateLimelightConfigIfNeeded() {
+        if (limelight == null) return;
+        if (Config.APRILTAG_PIPELINE != lastLimelightPipeline) {
+            limelight.pipelineSwitch(Config.APRILTAG_PIPELINE);
+            lastLimelightPipeline = Config.APRILTAG_PIPELINE;
+        }
+    }
+
     private void updateWebcamExposureIfNeeded() {
         if (webcam == null) return;
         try {
@@ -557,7 +569,6 @@ public class BASE_Debug extends LinearOpMode {
                 alignMinErr = Double.MAX_VALUE;
                 alignStartErr = -1.0;
                 alignStartMs = now;
-                lastAlignTagSeenMs = now;
                 assistStatus = "LOOKING FOR CELL TAGS";
             }
         }
@@ -583,9 +594,7 @@ public class BASE_Debug extends LinearOpMode {
         if (pressedY || pressedOptions) {
             if (pinpoint != null) fieldHeadingOffsetDeg = headingDeg();
             assistStatus = "HEADING RE-ZEROED";
-        } else if (gamepad1.y || optionsHeld) {
-            // keep the message while held, it clears on the next normal loop
-        } else if (assistStatus.equals("HEADING RE-ZEROED")) {
+        } else if (!gamepad1.y && !optionsHeld && assistStatus.equals("HEADING RE-ZEROED")) {
             assistStatus = "READY";
         }
 
@@ -662,7 +671,11 @@ public class BASE_Debug extends LinearOpMode {
         return false;
     }
 
-    private void setRobotDrive(double forward, double strafeRight, double turn) {
+    private void setRobotDrive(double forwardCommand, double strafeRightCommand, double turnCommand) {
+        double forward = forwardCommand;
+        double strafeRight = strafeRightCommand;
+        double turn = turnCommand;
+
         if (Config.INVERT_FORWARD) {
             forward = -forward;
             strafeRight = -strafeRight;
@@ -831,7 +844,6 @@ public class BASE_Debug extends LinearOpMode {
         if (lockedFiducial != null) {
             double[] raw = tagPoseInches(lockedFiducial);
             if (raw != null) {
-                allowedCount = 1;
                 double forward = raw[forwardAxis] * (Config.TAG_FORWARD_NEGATE ? -1.0 : 1.0);
                 double right = raw[rightAxis] * (Config.TAG_RIGHT_NEGATE ? -1.0 : 1.0);
                 tagDebug = String.format(Locale.US, "OK - LOCKED Tag #%d", lockedAlignTagId);
@@ -889,14 +901,11 @@ public class BASE_Debug extends LinearOpMode {
 
         if (tagInView) {
             alignTagSeen = true;
-            lastAlignTagSeenMs = now;
             errForward = tag.forwardIn - Config.ALIGN_TARGET_FORWARD_IN;
             errRight = tag.rightIn - targetRightIn();
 
             alignLastErrF = errForward;
             alignLastErrR = errRight;
-            alignLastSeenX = robotX;
-            alignLastSeenY = robotY;
 
             // Compute target position in Field coordinates (inches) for accurate odometry-based blind tracking
             double rad = Math.toRadians(robotHeadingDeg);
@@ -1008,7 +1017,8 @@ public class BASE_Debug extends LinearOpMode {
         ballBlindStartMs = 0;
         lastBlobSeenMs = now;
 
-        boolean centered = Math.abs(target.txDeg) <= Config.BALL_CENTER_TOLERANCE_DEG;
+        double absTx = Math.abs(target.txDeg);
+        boolean centered = absTx <= Config.BALL_CENTER_TOLERANCE_DEG;
         double yErr = Config.BALL_STOP_Y_FRACTION - target.yFraction;
         boolean closeEnough = yErr <= 0.0;
 
@@ -1017,16 +1027,30 @@ public class BASE_Debug extends LinearOpMode {
             return;
         }
 
+        // Smooth strafe ramping near centering tolerance zone
         double strafe = 0.0;
         if (!centered) {
-            strafe = clip(target.txDeg * Config.BALL_STRAFE_KP, -Config.BALL_MAX_STRAFE, Config.BALL_MAX_STRAFE);
-            strafe = Math.copySign(Math.max(Math.abs(strafe), Config.BALL_MIN_STRAFE), strafe);
+            double propStrafe = absTx * Config.BALL_STRAFE_KP;
+            double mag = clip(propStrafe, Config.BALL_MIN_STRAFE, Config.BALL_MAX_STRAFE);
+            double rampDeg = 5.0; // ramp down smoothly within 5 deg of tolerance
+            if (absTx - Config.BALL_CENTER_TOLERANCE_DEG < rampDeg) {
+                double ramp = Math.max(0.0, (absTx - Config.BALL_CENTER_TOLERANCE_DEG) / rampDeg);
+                mag = Math.max(Config.BALL_MIN_STRAFE * ramp, mag * ramp);
+            }
+            strafe = Math.copySign(mag, target.txDeg);
         }
 
+        // Smooth forward drive ramping near stop height
         double drive = 0.0;
         if (!closeEnough) {
-            drive = clip(yErr * Config.BALL_FORWARD_KP, 0.0, Config.BALL_MAX_SPEED);
-            drive = Math.max(drive, Config.MIN_BALL_FORWARD);
+            double propDrive = yErr * Config.BALL_FORWARD_KP;
+            double mag = clip(propDrive, Config.MIN_BALL_FORWARD, Config.BALL_MAX_SPEED);
+            double rampDist = 0.15; // ramp down smoothly over the last 15% of image height
+            if (yErr < rampDist) {
+                double ramp = Math.max(0.0, yErr / rampDist);
+                mag = Math.max(Config.MIN_BALL_FORWARD * ramp, mag * ramp);
+            }
+            drive = mag;
         }
 
         double forward = Config.BALL_CAMERA_ON_BACK ? -drive : drive;
@@ -1150,6 +1174,11 @@ public class BASE_Debug extends LinearOpMode {
     }
 
     private class BallPipeline extends OpenCvPipeline {
+        private final Scalar COLOR_GREEN = new Scalar(0, 255, 0);
+        private final Scalar COLOR_YELLOW = new Scalar(255, 255, 0);
+        private final Scalar COLOR_BLUE = new Scalar(255, 0, 0);
+        private final Scalar COLOR_WHITE = new Scalar(255);
+
         private final Mat small = new Mat(), blurred = new Mat(), rgb = new Mat(), hsv = new Mat();
         private final Mat mask = new Mat(), dist = new Mat(), hierarchy = new Mat(), noHierarchy = new Mat();
         private final Mat maskUp = new Mat();
@@ -1182,25 +1211,30 @@ public class BASE_Debug extends LinearOpMode {
                     if (area >= Config.MIN_BALL_AREA_PX && area <= 0.3 * frameArea) {
                         Rect rect = Imgproc.boundingRect(contour);
 
-                        Mat roiDist = dist.submat(rect);
-                        Mat roiMask = Mat.zeros(rect.size(), CvType.CV_8UC1);
-                        Imgproc.drawContours(roiMask, Collections.singletonList(contour), 0, new Scalar(255), -1,
-                                Imgproc.LINE_8, noHierarchy, 0, new org.opencv.core.Point(-rect.x, -rect.y));
-                        Core.MinMaxLocResult mm = Core.minMaxLoc(roiDist, roiMask);
-                        roiDist.release();
-                        roiMask.release();
+                        Mat roiDist = null;
+                        Mat roiMask = null;
+                        try {
+                            roiDist = dist.submat(rect);
+                            roiMask = Mat.zeros(rect.size(), CvType.CV_8UC1);
+                            Imgproc.drawContours(roiMask, Collections.singletonList(contour), 0, COLOR_WHITE, -1,
+                                    Imgproc.LINE_8, noHierarchy, 0, new Point(-rect.x, -rect.y));
+                            Core.MinMaxLocResult mm = Core.minMaxLoc(roiDist, roiMask);
 
-                        double radius = Math.max(1.5, mm.maxVal);
-                        BallBlob blob = new BallBlob();
-                        blob.radius = radius;
-                        blob.count = (int) Math.max(1, Math.round(area / (Math.PI * radius * radius)));
-                        blob.left = rect.x;
-                        blob.right = rect.x + rect.width;
-                        blob.top = rect.y;
-                        blob.bottom = rect.y + rect.height;
-                        blob.cx = rect.x + rect.width / 2.0;
-                        blob.cy = rect.y + rect.height / 2.0;
-                        blobs.add(blob);
+                            double radius = Math.max(1.5, mm.maxVal);
+                            BallBlob blob = new BallBlob();
+                            blob.radius = radius;
+                            blob.count = (int) Math.max(1, Math.round(area / (Math.PI * radius * radius)));
+                            blob.left = rect.x;
+                            blob.right = rect.x + rect.width;
+                            blob.top = rect.y;
+                            blob.bottom = rect.y + rect.height;
+                            blob.cx = rect.x + rect.width / 2.0;
+                            blob.cy = rect.y + rect.height / 2.0;
+                            blobs.add(blob);
+                        } finally {
+                            if (roiDist != null) roiDist.release();
+                            if (roiMask != null) roiMask.release();
+                        }
                     }
                     contour.release();
                 }
@@ -1252,7 +1286,7 @@ public class BASE_Debug extends LinearOpMode {
                 for (int i = 0; i < m; i++) {
                     if (findRoot(parent, i) == best) members.add(blobs.get(i));
                 }
-                Collections.sort(members, (p1, p2) -> Double.compare(p2.bottom, p1.bottom));
+                members.sort((p1, p2) -> Double.compare(p2.bottom, p1.bottom));
                 double sumX = 0.0;
                 double taken = 0.0;
                 for (BallBlob mb : members) {
@@ -1270,15 +1304,15 @@ public class BASE_Debug extends LinearOpMode {
                     BallBlob b = blobs.get(i);
                     boolean inBest = findRoot(parent, i) == best;
                     Imgproc.rectangle(input,
-                            new org.opencv.core.Point(b.left / scale, b.top / scale),
-                            new org.opencv.core.Point(b.right / scale, b.bottom / scale),
-                            inBest ? new Scalar(0, 255, 0) : new Scalar(255, 255, 0), 2);
+                            new Point(b.left / scale, b.top / scale),
+                            new Point(b.right / scale, b.bottom / scale),
+                            inBest ? COLOR_GREEN : COLOR_YELLOW, 2);
                 }
-                Imgproc.circle(input, new org.opencv.core.Point(centerX / scale, (bottom[best] - 10) / scale),
-                        10, new Scalar(255, 0, 0), 3);
+                Imgproc.circle(input, new Point(centerX / scale, (bottom[best] - 10) / scale),
+                        10, COLOR_BLUE, 3);
                 Imgproc.putText(input, String.valueOf(groupCount[best]),
-                        new org.opencv.core.Point(centerX / scale + 14, (bottom[best] - 10) / scale),
-                        Imgproc.FONT_HERSHEY_SIMPLEX, 0.9, new Scalar(255, 0, 0), 2);
+                        new Point(centerX / scale + 14, (bottom[best] - 10) / scale),
+                        Imgproc.FONT_HERSHEY_SIMPLEX, 0.9, COLOR_BLUE, 2);
             } catch (Exception e) {
                 latestBalls = null;
             }
