@@ -9,6 +9,7 @@ import com.qualcomm.hardware.limelightvision.Limelight3A;
 import com.qualcomm.robotcore.eventloop.opmode.LinearOpMode;
 import com.qualcomm.robotcore.eventloop.opmode.TeleOp;
 import com.qualcomm.robotcore.hardware.DcMotor;
+import com.qualcomm.robotcore.hardware.Servo;
 import com.qualcomm.robotcore.hardware.VoltageSensor;
 
 import org.firstinspires.ftc.robotcore.external.hardware.camera.WebcamName;
@@ -44,19 +45,13 @@ import java.util.concurrent.TimeUnit;
  * Controls (Gamepad 1):
  *  - Sticks: field-centric mecanum drive
  *  - Y / Options: re-zero field heading
- *  - A: AprilTag align to one of YOUR alliance's HIVE CELLS (toggle, sticks cancel it)
+ *  - A: AprilTag align (Limelight): drives right UNDER the closest tag from Config.ALIGN_TAG_IDS (toggle, sticks cancel it)
  *  - B: drive to the biggest group of yellow balls seen by Webcam 1 (toggle, sticks cancel it)
  *  - X (during init): switch RED / BLUE alliance
  *  - RB + D-Pad: single-wheel direction test
  *
- * BIOBUZZ AprilTag layout (36h11, 3.25 in tags, 4 tags per CELL):
- *  - Red  far  CELL (opposite audience): IDs 30-33
- *  - Red  audience CELL:                 IDs 34-37
- *  - Blue audience CELL:                 IDs 38-41
- *  - Blue far  CELL (opposite audience): IDs 42-45
- * The tag sticker faces down at the floor, so mount the Limelight where it can see UP/forward at the cells.
- *
- * Limelight setup: AprilTag pipeline, family 36h11, tag size 82.5 mm (3.25 in).
+ * Limelight setup: AprilTag pipeline, family 36h11, tag size 82.5 mm (3.25 in), and the camera position
+ * entered on the Limelight settings page so tag positions are measured from the robot's center.
  */
 @TeleOp(name = "BIOBUZZ TeleOp", group = "BIOBUZZ")
 public class BASE extends LinearOpMode {
@@ -65,21 +60,29 @@ public class BASE extends LinearOpMode {
     public static class Config {
         // ---------- Hardware names (must match the Robot Configuration) ----------
         public static String FRONT_LEFT_NAME = "front_left";
-        public static String FRONT_RIGHT_NAME = "front_right";
+        public static String FRONT_RIGHT_NAME = "back_right";
         public static String BACK_LEFT_NAME = "back_left";
-        public static String BACK_RIGHT_NAME = "back_right";
+        public static String BACK_RIGHT_NAME = "front_right";
         public static String PINPOINT_NAME = "pinpoint";
         public static String LIMELIGHT_NAME = "limelight";
         public static String WEBCAM_NAME = "Webcam 1";
+        public static String RGB_LIGHT_NAME = "rgb_light";   // goBILDA RGB Indicator Light (set up as a plain "Servo")
+
+        // ---------- RGB indicator light color (servo position) ----------
+        // Off 0.0 | Red 0.277 | Orange 0.333 | Yellow 0.388 | Sage 0.444 | Green 0.500
+        // Azure 0.555 | Blue 0.611 | Indigo 0.666 | Violet 0.722 | White 1.0
+        public static double RGB_LIGHT_POSITION = 0.555;      // approximate #4BB4CB (blue-cyan)
 
         // ---------- Motor reversals (use RB + D-Pad test to check) ----------
-        public static boolean REVERSE_FRONT_LEFT = false;
-        public static boolean REVERSE_FRONT_RIGHT = true;
-        public static boolean REVERSE_BACK_LEFT = false;
-        public static boolean REVERSE_BACK_RIGHT = true;
+        public static boolean REVERSE_FRONT_LEFT = true;
+        public static boolean REVERSE_FRONT_RIGHT = false;
+        public static boolean REVERSE_BACK_LEFT = true;
+        public static boolean REVERSE_BACK_RIGHT = false;
 
         // ---------- Drive direction ----------
-        public static boolean INVERT_FORWARD = true; // flips forward/back for sticks AND auto assists
+        public static boolean INVERT_FORWARD = false; // true = the opposite end is the robot's front (also flips strafe)
+        public static boolean REVERSE_DRIVE_FORWARD = false; // correction: flip forward / backward commands
+        public static boolean REVERSE_DRIVE_TURN = false;    // correction: flip clockwise / counter-clockwise commands
 
         // ---------- Field-centric ("swerve style") driving ----------
         public static boolean FIELD_CENTRIC = true;          // true = swerve style, false = normal robot-centric
@@ -109,24 +112,37 @@ public class BASE extends LinearOpMode {
 
         // ---------- Driver / assist limits ----------
         public static double STICK_DEADZONE = 0.16;
-        public static double MAX_AUTO_TRANSLATION = 0.20;
-        public static double MAX_AUTO_TURN = 0.12;
 
-        // ---------- AprilTag align ----------
-        public static int APRILTAG_PIPELINE = 0;           // Limelight pipeline number for AprilTags
-        public static double TARGET_STANDOFF_IN = 36.0;    // distance from camera/robot to the tags to stop at (TUNE THIS)
-        public static String ALIGN_TAG_IDS = "31,35,39,43";   // tags auto-align may use, comma separated (add your 4th here)
-        public static double ALIGN_TX_OFFSET_DEG = 0.0;    // left/right offset: + = robot ends aimed LEFT of the tag, - = RIGHT
-        public static double ALIGN_DISTANCE_OFFSET_IN = 0.0; // added to TARGET_STANDOFF_IN: + = stop farther back
-        public static double MIN_AUTO_TURN = 0.08;          // smallest turn power it uses (raise if it stalls short)
-        public static double MIN_AUTO_FORWARD = 0.10;       // smallest drive power it uses (raise if it stalls short)
-        public static long ALIGN_TIMEOUT_MS = 4000;         // auto align stops by itself after this long
-        public static boolean REVERSE_ALIGN_TURN = true;    // flip if auto align turns AWAY from the tag
-        public static boolean REVERSE_ALIGN_FORWARD = true; // flip if auto align drives AWAY from the tag
-        public static double POSITION_KP = 0.02;           // forward power per inch of error
-        public static double HEADING_KP = 0.015;           // turn power per degree of tx
-        public static double POSITION_TOLERANCE_IN = 2.0;
-        public static double HEADING_TOLERANCE_DEG = 2.0;
+        // ---------- AprilTag align: drive right UNDER the tag (Limelight) ----------
+        // The Limelight's position on the robot is set on the Limelight settings page, so the tag position it
+        // reports is measured from the robot's center.
+        public static int APRILTAG_PIPELINE = 0;              // Limelight pipeline number for AprilTags
+
+        public static String RED_ALIGN_TAG_IDS = "31,35";    // tags to align to on RED
+        public static String BLUE_ALIGN_TAG_IDS = "39,43";   // tags to align to on BLUE
+        // Which of the Limelight's tag pose numbers (x, y, z) mean forward / right. 0 = x, 1 = y, 2 = z.
+        // Check them with the "Tag raw" telemetry line (see the setup steps).
+        public static int TAG_FORWARD_AXIS = 2;
+        public static int TAG_RIGHT_AXIS = 0;
+        public static boolean TAG_FORWARD_NEGATE = false;
+        public static boolean TAG_RIGHT_NEGATE = false;        // flip so right is + when the tag is to the robot's RIGHT
+
+        // Where the tag should end up, measured from the robot's center. 0 and 0 = exactly overhead.
+        public static double ALIGN_TARGET_FORWARD_IN = 50.0;   // + = tag ends up ahead of center
+        public static double ALIGN_TARGET_RIGHT_IN = 40.5;     // + = tag ends up to the right of center
+
+        public static boolean BLUE_MIRRORS_SIDE = true;        // blue puts the tag on the opposite side from red
+        public static double ALIGN_TOLERANCE_IN = 1.5;        // done when within this many inches
+
+        public static double ALIGN_KP = 0.04;                 // speed per inch of error
+        public static double ALIGN_MAX_SPEED = 0.50;
+        public static double ALIGN_MIN_SPEED = 0.15;
+        public static boolean ALIGN_HOLD_HEADING = true;      // keep the robot facing the same way while it slides under (needs Pinpoint)
+        public static double ALIGN_HEADING_KP = 0.01;
+        public static double ALIGN_MAX_TURN = 0.15;
+        public static double ALIGN_BLIND_MAX_IN = 30.0;       // if the tag leaves the view closer than this, finish the move with the Pinpoint
+        public static double ALIGN_DIVERGE_IN = 8.0;          // safety: stops if it gets this much farther from the tag
+        public static long ALIGN_TIMEOUT_MS = 6000;           // auto align stops by itself after this long
 
         // ---------- Yellow ball detection (Logitech webcam, "Webcam 1") ----------
         // HSV colors: tune on the Dashboard camera stream. Turn SHOW_BALL_MASK on to see what counts as yellow.
@@ -138,40 +154,47 @@ public class BASE extends LinearOpMode {
         public static int HSV_V_MAX = 255;
         public static boolean SHOW_BALL_MASK = false;       // true = camera stream shows white where it sees yellow
         public static double MIN_BALL_AREA_PX = 40.0;       // smallest yellow blob that counts (in a 320x240 image)
-        public static double CLUSTER_DIST_DIAMETERS = 3.0;  // balls closer than this many ball-widths = same group
+        public static double CLUSTER_DIST_DIAMETERS = 5.0;  // balls closer than this many ball-widths = same group
         public static double WEBCAM_HFOV_DEG = 60.0;        // webcam field of view (C270 is about 60)
 
         // ---------- Ball approach (B button) ----------
-        public static boolean BALL_CAMERA_ON_BACK = true;   // true = camera faces the robot's back, so it drives in reverse
+        public static boolean BALL_CAMERA_ON_BACK = false;  // false = camera is on the robot's front (it is now). true = camera is on the back
         public static boolean REVERSE_BALL_STRAFE = false;  // flip if it slides AWAY from the balls sideways
-        public static double BALL_STOP_Y_FRACTION = 0.75;   // stops when the group's bottom reaches this height in the image (0 = top, 1 = bottom)
-        public static double BALL_FORWARD_KP = 0.6;         // drive power per image-height error
-        public static double BALL_STRAFE_KP = 0.02;         // sideways power per degree off-center
+        public static double BALL_STOP_Y_FRACTION = 0.97;   // stops when the group's bottom reaches this height in the image (0 = top, 1 = bottom)
+        public static double BALL_FORWARD_KP = 4.0;         // drive power per image-height error
+        public static double BALL_STRAFE_KP = 0.04;         // sideways power per degree off-center
         public static double BALL_CENTER_TOLERANCE_DEG = 3.0;
-        public static double BALL_MAX_SPEED = 0.20;         // top driving speed toward the balls
-        public static double MIN_BALL_FORWARD = 0.10;       // slowest driving speed toward the balls
-        public static double BALL_MAX_STRAFE = 0.25;        // top sideways speed toward the balls
-        public static double BALL_MIN_STRAFE = 0.10;        // slowest sideways speed toward the balls
+        public static double BALL_MAX_SPEED = 1.00;         // top driving speed toward the balls
+        public static double MIN_BALL_FORWARD = 0.40;       // slowest driving speed toward the balls
+        public static double BALL_MAX_STRAFE = 0.80;        // top sideways speed toward the balls
+        public static double BALL_MIN_STRAFE = 0.30;        // slowest sideways speed toward the balls
         public static boolean BALL_HOLD_HEADING = true;     // keeps the robot facing the same way while it slides in (needs Pinpoint)
         public static double BALL_HEADING_KP = 0.01;        // turn power per degree of heading drift
         public static double BALL_MAX_TURN = 0.15;          // cap on the heading-hold turn
+        public static int BALL_CAPACITY = 4;                // most balls the robot can hold. A group counts as at most this many
+        public static long BALL_BLIND_PUSH_MS = 300;        // if the balls slip out of view at the bottom, keep driving this long (0 = off)
+        public static double BALL_BLIND_MIN_Y = 0.85;       // only do the final push if the balls were at least this low in the image
+
+        // ---------- Intake ----------
+        public static String INTAKE_NAME = "intake";
+        public static boolean REVERSE_INTAKE = false;
+        public static double INTAKE_IN_POWER = 0.5;
+        public static double INTAKE_OUT_POWER = 1.0;
+        public static double TRIGGER_THRESHOLD = 0.1;
+
         public static long BALL_TIMEOUT_MS = 6000;          // stops by itself after this long
     }
 
-    // ---------- BIOBUZZ tag layout (from the game manual) ----------
-    private static final int FIRST_TAG_ID = 30;
-    private static final int LAST_TAG_ID = 45;
-    // Cell index = (id - 30) / 4  ->  0 red far, 1 red audience, 2 blue audience, 3 blue far
-    private static final String[] CELL_NAMES = {
-            "Red Far Cell", "Red Audience Cell", "Blue Audience Cell", "Blue Far Cell"
-    };
-
     // ---------- Hardware ----------
     private DcMotor frontLeft, frontRight, backLeft, backRight;
+
+    private DcMotor intake;
     private GoBildaPinpointDriver pinpoint;
     private Limelight3A limelight;
     private OpenCvWebcam webcam;
     private VoltageSensor batteryVoltageSensor;
+    private Servo rgbLight;
+    private double lastRgbPosition = -1.0;
 
     // ---------- Webcam ball detection ----------
     private final BallPipeline ballPipeline = new BallPipeline();
@@ -194,13 +217,32 @@ public class BASE extends LinearOpMode {
     private int lastGain = -1;
 
     private String assistStatus = "READY";
+    private long statusHoldUntilMs = 0;
     private String tagDebug = "";
     private boolean alignTagSeen = false;
+    private double alignHoldHeadingDeg = 0.0;
+    private double alignLastErrF = 0.0, alignLastErrR = 0.0;
+    private double alignLastSeenX = 0.0, alignLastSeenY = 0.0;
+    private double alignMinErr = Double.MAX_VALUE;
+    private double alignStartErr = -1.0;
     private long alignStartMs = 0;
     private boolean ballSeen = false;
     private double ballHoldHeadingDeg = 0.0;
+    private double lastBallY = 0.0;
+    private long ballBlindStartMs = 0;
     private long ballStartMs = 0;
     private String alignDebug = "";
+
+    private boolean allianceLocked = false;
+    private boolean lockedRed = true;
+
+    private String activeTagIds() {
+        boolean red = allianceLocked ? lockedRed : Config.RED_ALLIANCE;
+        return red ? Config.RED_ALIGN_TAG_IDS : Config.BLUE_ALIGN_TAG_IDS;
+    }
+    private double targetRightIn() {
+        return (Config.BLUE_MIRRORS_SIDE && !lockedRed) ? -Config.ALIGN_TARGET_RIGHT_IN : Config.ALIGN_TARGET_RIGHT_IN;
+    }
     private long lastAlignTagSeenMs = 0, lastBlobSeenMs = 0;
 
     /** Robot heading in degrees (counter-clockwise positive), flipped if REVERSE_HEADING is on. */
@@ -212,7 +254,9 @@ public class BASE extends LinearOpMode {
 
     @Override
     public void runOpMode() {
+        Config.FIELD_CENTRIC = true; // Dashboard values stay until the app restarts, so always start in field-centric
         initializeHardware();
+        setIndicatorLightPosition(RAINBOW_POSITIONS[0]);
         configurePinpoint();
 
         if (limelight != null) {
@@ -228,14 +272,22 @@ public class BASE extends LinearOpMode {
         fieldHeadingOffsetDeg = Config.START_HEADING_DEG;
 
         // ---------- INIT LOOP ----------
+        // Smoothly move the goBILDA indicator hue between red and its standard blue preset.
+        long initLightStartMs = System.currentTimeMillis();
         while (!isStarted() && !isStopRequested()) {
             if (gamepad1.x && !previousInitX) {
                 Config.RED_ALLIANCE = !Config.RED_ALLIANCE;
             }
             previousInitX = gamepad1.x;
 
+            if (gamepad1.dpad_left && !previousLeftBumper) {
+                Config.FIELD_CENTRIC = !Config.FIELD_CENTRIC;
+            }
+            previousLeftBumper = gamepad1.dpad_left;
+
             updatePinpointConfigIfNeeded();
             updateWebcamExposureIfNeeded();
+            updateInitIndicatorLight(System.currentTimeMillis() - initLightStartMs);
             if (pinpoint != null) {
                 pinpoint.update();
                 // The way the robot is facing when you press START becomes "forward" for the driver
@@ -246,12 +298,16 @@ public class BASE extends LinearOpMode {
             sleep(20);
         }
 
+        lockedRed = Config.RED_ALLIANCE;
+        allianceLocked = true;
+
         // ---------- MAIN LOOP ----------
         while (opModeIsActive()) {
             long now = System.currentTimeMillis();
 
             updatePinpointConfigIfNeeded();
             updateWebcamExposureIfNeeded();
+            updateTeleOpIndicatorLight();
 
             double robotX = 0.0, robotY = 0.0, robotHeadingDeg = 0.0;
             if (pinpoint != null) {
@@ -263,6 +319,8 @@ public class BASE extends LinearOpMode {
 
             handleButtons(now);
 
+            runIntake();
+
             boolean manualOverride = hasManualStickInput();
             if (manualOverride && (autoAlignActive || blobApproachActive)) {
                 cancelAssist("MANUAL OVERRIDE");
@@ -273,12 +331,12 @@ public class BASE extends LinearOpMode {
                     ? latestBalls : null;
 
             if (autoAlignActive) {
-                runAprilTagAlign(tagView, now);
+                runAprilTagAlign(tagView, now, robotX, robotY, robotHeadingDeg);
             } else if (blobApproachActive) {
                 runBallApproach(ballTarget, now, robotHeadingDeg);
             } else {
                 boolean wheelTest = runFieldCentricDrive(robotHeadingDeg);
-                if (!wheelTest && !assistStatus.equals("HEADING RE-ZEROED")) {
+                if (!wheelTest && !assistStatus.equals("HEADING RE-ZEROED") && now >= statusHoldUntilMs) {
                     assistStatus = manualOverride ? "MANUAL DRIVE" : "READY";
                 }
             }
@@ -289,6 +347,7 @@ public class BASE extends LinearOpMode {
 
         // ---------- SHUTDOWN ----------
         stopDrive();
+        if (intake != null) intake.setPower(0.0);
         if (limelight != null) limelight.stop();
         if (webcam != null) {
             webcam.stopStreaming();
@@ -300,20 +359,71 @@ public class BASE extends LinearOpMode {
     // SETUP
     // =====================================================================
 
-    private void initializeHardware() {
-        try {
-            frontLeft = hardwareMap.get(DcMotor.class, Config.FRONT_LEFT_NAME);
-            frontRight = hardwareMap.get(DcMotor.class, Config.FRONT_RIGHT_NAME);
-            backLeft = hardwareMap.get(DcMotor.class, Config.BACK_LEFT_NAME);
-            backRight = hardwareMap.get(DcMotor.class, Config.BACK_RIGHT_NAME);
+    // Rainbow order, taken from the goBILDA position table
+    private static final double[] RAINBOW_POSITIONS = {
+            0.277,  // Red
+            0.333,  // Orange
+            0.388,  // Yellow
+            0.500,  // Green
+            0.611,  // Blue
+            0.666,  // Indigo
+            0.722   // Violet
+    };
+    private static final long INIT_LIGHT_COLOR_HOLD_MS = 500;   // time on each color
 
-            frontLeft.setZeroPowerBehavior(DcMotor.ZeroPowerBehavior.BRAKE);
-            frontRight.setZeroPowerBehavior(DcMotor.ZeroPowerBehavior.BRAKE);
-            backLeft.setZeroPowerBehavior(DcMotor.ZeroPowerBehavior.BRAKE);
-            backRight.setZeroPowerBehavior(DcMotor.ZeroPowerBehavior.BRAKE);
+    /** Applies a light position only when it has changed enough to matter. */
+    private void setIndicatorLightPosition(double position) {
+        if (rgbLight == null) return;
+
+        double safePosition = clip(position, 0.0, 1.0);
+        if (Math.abs(safePosition - lastRgbPosition) >= 0.0001) {
+            rgbLight.setPosition(safePosition);
+            lastRgbPosition = safePosition;
+        }
+    }
+
+    /**
+     * During INIT, show only the two solid preset colors: red for 2 seconds, then
+     * standard blue for 2 seconds, repeating. There is no interpolation, OFF command,
+     * or special end-of-cycle reset, so the light never sweeps through other colors
+     * or briefly blanks at the wraparound.
+     *
+     * Note: this is a direct color switch, not a smooth fade. The goBILDA indicator's
+     * single PWM input selects a point on its color spectrum; a fade between red and blue
+     * would necessarily display the colors between those presets.
+     */
+    /** During INIT, hard-switch through the rainbow, holding each color, then repeat. No fading. */
+    private void updateInitIndicatorLight(long elapsedMs) {
+        int index = (int) ((elapsedMs / INIT_LIGHT_COLOR_HOLD_MS) % RAINBOW_POSITIONS.length);
+        setIndicatorLightPosition(RAINBOW_POSITIONS[index]);
+    }
+
+    /** During TeleOp, hold the team's electric-blue color (approximately #4BB4CB). */
+    private void updateTeleOpIndicatorLight() {
+        setIndicatorLightPosition(Config.RGB_LIGHT_POSITION);
+    }
+
+    private DcMotor getDriveMotor(String name) {
+        try {
+            DcMotor motor = hardwareMap.get(DcMotor.class, name);
+            motor.setZeroPowerBehavior(DcMotor.ZeroPowerBehavior.BRAKE);
+            return motor;
         } catch (Exception e) {
-            telemetry.addData("Hardware Warning", "Drive motors missing or misnamed");
-            telemetry.update();
+            return null;
+        }
+    }
+
+    private void initializeHardware() {
+        // each motor is looked up on its own, so a missing or misnamed one doesn't stop the others
+        frontLeft = getDriveMotor(Config.FRONT_LEFT_NAME);
+        frontRight = getDriveMotor(Config.FRONT_RIGHT_NAME);
+        backLeft = getDriveMotor(Config.BACK_LEFT_NAME);
+        backRight = getDriveMotor(Config.BACK_RIGHT_NAME);
+
+        try {
+            rgbLight = hardwareMap.get(Servo.class, Config.RGB_LIGHT_NAME);
+        } catch (Exception e) {
+            rgbLight = null;
         }
 
         try {
@@ -332,6 +442,15 @@ public class BASE extends LinearOpMode {
             batteryVoltageSensor = sensor;
             break;
         }
+
+        try {
+            intake = hardwareMap.get(DcMotor.class, Config.INTAKE_NAME);
+            intake.setDirection(Config.REVERSE_INTAKE ? DcMotor.Direction.REVERSE : DcMotor.Direction.FORWARD);
+            intake.setZeroPowerBehavior(DcMotor.ZeroPowerBehavior.BRAKE);
+            intake.setMode(DcMotor.RunMode.RUN_WITHOUT_ENCODER);
+        } catch (Exception e) {
+            intake = null;
+        }
     }
 
     private void initializeWebcam() {
@@ -344,9 +463,9 @@ public class BASE extends LinearOpMode {
             webcam.openCameraDeviceAsync(new OpenCvCamera.AsyncCameraOpenListener() {
                 @Override
                 public void onOpened() {
-                    webcam.startStreaming(640, 480, OpenCvCameraRotation.UPRIGHT);
-                    FtcDashboard.getInstance().startCameraStream(webcam, 30);
-                    webcamStatus = "STREAMING 640x480";
+                    webcam.startStreaming(320, 240, OpenCvCameraRotation.UPRIGHT);
+                    FtcDashboard.getInstance().startCameraStream(webcam, 10);
+                    webcamStatus = "STREAMING 320x240";
                 }
 
                 @Override
@@ -439,6 +558,9 @@ public class BASE extends LinearOpMode {
                 blobApproachActive = false;
                 autoAlignActive = true;
                 alignTagSeen = false;
+                alignHoldHeadingDeg = headingDeg();
+                alignMinErr = Double.MAX_VALUE;
+                alignStartErr = -1.0;
                 alignStartMs = now;
                 lastAlignTagSeenMs = now;
                 assistStatus = "LOOKING FOR CELL TAGS";
@@ -454,6 +576,8 @@ public class BASE extends LinearOpMode {
                 autoAlignActive = false;
                 blobApproachActive = true;
                 ballSeen = false;
+                lastBallY = 0.0;
+                ballBlindStartMs = 0;
                 ballHoldHeadingDeg = headingDeg();
                 ballStartMs = now;
                 lastBlobSeenMs = now;
@@ -470,12 +594,12 @@ public class BASE extends LinearOpMode {
             assistStatus = "READY";
         }
 
-        boolean pressedLeftBumper = gamepad1.left_bumper && !previousLeftBumper;
+        boolean pressedLeftBumper = gamepad1.dpad_left && !previousLeftBumper;
         if (pressedLeftBumper) {
             Config.FIELD_CENTRIC = !Config.FIELD_CENTRIC;
             assistStatus = Config.FIELD_CENTRIC ? "FIELD-CENTRIC ON" : "ROBOT-CENTRIC ON";
         }
-        previousLeftBumper = gamepad1.left_bumper;
+        previousLeftBumper = gamepad1.dpad_left;
 
         previousA = gamepad1.a;
         previousB = gamepad1.b;
@@ -493,6 +617,7 @@ public class BASE extends LinearOpMode {
         autoAlignActive = false;
         blobApproachActive = false;
         assistStatus = reason;
+        statusHoldUntilMs = System.currentTimeMillis() + 4000; // keep the reason on screen for 4 seconds
         stopDrive();
     }
 
@@ -546,10 +671,17 @@ public class BASE extends LinearOpMode {
     }
 
     private void setRobotDrive(double forward, double strafeRight, double turn) {
+        // INVERT_FORWARD is the 180-degree robot-front option; it flips both translation axes.
         if (Config.INVERT_FORWARD) {
             forward = -forward;
             strafeRight = -strafeRight;
         }
+
+        // These independent corrections match the observed drive behavior without changing strafing.
+        // Keeping them here applies the same directions to manual drive and both assist routines.
+        if (Config.REVERSE_DRIVE_FORWARD) forward = -forward;
+        if (Config.REVERSE_DRIVE_TURN) turn = -turn;
+
         double fl = forward + strafeRight + turn;
         double fr = forward - strafeRight - turn;
         double bl = forward - strafeRight + turn;
@@ -571,6 +703,17 @@ public class BASE extends LinearOpMode {
         if (backRight != null) backRight.setPower(br / max);
     }
 
+    private void runIntake() {
+        if (intake == null) return;
+        if (gamepad1.left_bumper) {
+            intake.setPower(-Config.INTAKE_OUT_POWER);
+        } else if (gamepad1.left_trigger > Config.TRIGGER_THRESHOLD) {
+            intake.setPower(Config.INTAKE_IN_POWER);
+        } else {
+            intake.setPower(0.0);
+        }
+    }
+
     private void stopDrive() {
         if (frontLeft != null) frontLeft.setPower(0.0);
         if (frontRight != null) frontRight.setPower(0.0);
@@ -582,29 +725,23 @@ public class BASE extends LinearOpMode {
     // APRILTAG ALIGN (BIOBUZZ CELLS)
     // =====================================================================
 
-    /** What the Limelight sees on one CELL (tags averaged together). */
+    /** The closest allowed tag the Limelight sees, in the robot's drive directions. */
     private static class TagView {
         final int tagId;
-        final double txDeg;       // + means the cell is to the right
-        final double distanceIn;  // NaN if unknown
-        final int tagCount;
+        final double forwardIn;   // + = the tag is toward the robot's front (webcam side)
+        final double rightIn;     // + = the tag is to the robot's right
+        final double rawX, rawY, rawZ; // numbers straight from the Limelight, for setting up the axes
+        final int tagCount;       // how many allowed tags are in view
 
-        TagView(int tagId, double txDeg, double distanceIn, int tagCount) {
+        TagView(int tagId, double forwardIn, double rightIn, double rawX, double rawY, double rawZ, int tagCount) {
             this.tagId = tagId;
-            this.txDeg = txDeg;
-            this.distanceIn = distanceIn;
+            this.forwardIn = forwardIn;
+            this.rightIn = rightIn;
+            this.rawX = rawX;
+            this.rawY = rawY;
+            this.rawZ = rawZ;
             this.tagCount = tagCount;
         }
-    }
-
-    private static int cellIndexForTag(int id) {
-        if (id < FIRST_TAG_ID || id > LAST_TAG_ID) return -1;
-        return (id - FIRST_TAG_ID) / 4;
-    }
-
-    /** Red owns cells 0 and 1 (IDs 30-37). Blue owns cells 2 and 3 (IDs 38-45). */
-    private static boolean isOwnAlliance(int cellIndex) {
-        return (cellIndex / 2) == (Config.RED_ALLIANCE ? 0 : 1);
     }
 
     private int[] allowedTagIds = new int[0];
@@ -612,9 +749,10 @@ public class BASE extends LinearOpMode {
 
     /** True if this tag ID is in Config.ALIGN_TAG_IDS (comma separated list). */
     private boolean isAllowedTag(int id) {
-        if (!Config.ALIGN_TAG_IDS.equals(allowedTagIdsSource)) {
-            allowedTagIdsSource = Config.ALIGN_TAG_IDS;
-            String[] parts = allowedTagIdsSource.split(",");
+        String ids = activeTagIds();
+        if (!ids.equals(allowedTagIdsSource)) {
+            allowedTagIdsSource = ids;
+            String[] parts = ids.split(",");
             int[] parsed = new int[parts.length];
             int n = 0;
             for (String part : parts) {
@@ -630,6 +768,18 @@ public class BASE extends LinearOpMode {
             if (allowed == id) return true;
         }
         return false;
+    }
+
+    /** The tag's position relative to the robot center, in inches: {x, y, z} exactly as the Limelight reports it. */
+    private static double[] tagPoseInches(LLResultTypes.FiducialResult tag) {
+        try {
+            Pose3D pose = tag.getTargetPoseRobotSpace();
+            if (pose == null || pose.getPosition() == null) return null;
+            Position p = pose.getPosition().toUnit(DistanceUnit.INCH);
+            return new double[]{p.x, p.y, p.z};
+        } catch (Exception e) {
+            return null;
+        }
     }
 
     private TagView readAprilTags() {
@@ -663,93 +813,130 @@ public class BASE extends LinearOpMode {
             return null;
         }
 
+        int forwardAxis = Math.max(0, Math.min(2, Config.TAG_FORWARD_AXIS));
+        int rightAxis = Math.max(0, Math.min(2, Config.TAG_RIGHT_AXIS));
+
         StringBuilder seen = new StringBuilder();
-        LLResultTypes.FiducialResult best = null;
         int allowedCount = 0;
+        TagView best = null;
+        double bestError = Double.MAX_VALUE;
 
         for (LLResultTypes.FiducialResult tag : fiducials) {
             seen.append(tag.getFiducialId()).append(' ');
             if (!isAllowedTag(tag.getFiducialId())) continue;
             allowedCount++;
-            // if more than one allowed tag is visible, use the biggest (closest) one
-            if (best == null || tag.getTargetArea() > best.getTargetArea()) best = tag;
+
+            double[] raw = tagPoseInches(tag);
+            if (raw == null) continue;
+            double forward = raw[forwardAxis] * (Config.TAG_FORWARD_NEGATE ? -1.0 : 1.0);
+            double right = raw[rightAxis] * (Config.TAG_RIGHT_NEGATE ? -1.0 : 1.0);
+
+            // if several allowed tags are visible, use the one that is closest to where we want to end up
+            double error = Math.hypot(forward - Config.ALIGN_TARGET_FORWARD_IN, right - targetRightIn());
+            if (error < bestError) {
+                bestError = error;
+                best = new TagView(tag.getFiducialId(), forward, right, raw[0], raw[1], raw[2], 0);
+            }
         }
 
         if (best == null) {
-            tagDebug = "SEES TAG IDs [" + seen.toString().trim() + "] BUT NONE ARE IN ALIGN_TAG_IDS ("
-                    + Config.ALIGN_TAG_IDS + ")";
+            tagDebug = allowedCount == 0
+                    ? "SEES TAG IDs [" + seen.toString().trim() + "] BUT NONE ARE IN ALIGN_TAG_IDS (" + activeTagIds() + ")"
+                    : "TAG SEEN BUT NO 3D POSE (check the Limelight tag size and camera position)";
             return null;
         }
         tagDebug = "OK - IDs [" + seen.toString().trim() + "]";
-
-        return new TagView(best.getFiducialId(), best.getTargetXDegrees(), tagDistanceIn(best), allowedCount);
+        return new TagView(best.tagId, best.forwardIn, best.rightIn, best.rawX, best.rawY, best.rawZ, allowedCount);
     }
 
-    /** Straight-line distance to the tag, in inches. Works for any Limelight axis layout. */
-    private static double tagDistanceIn(LLResultTypes.FiducialResult tag) {
-        try {
-            Pose3D pose = tag.getTargetPoseRobotSpace();
-            if (pose == null || pose.getPosition() == null) return Double.NaN;
-            Position p = pose.getPosition().toUnit(DistanceUnit.INCH);
-            double d = Math.sqrt(p.x * p.x + p.y * p.y + p.z * p.z);
-            return d > 0.5 ? d : Double.NaN;
-        } catch (Exception e) {
-            return Double.NaN;
-        }
-    }
-
-    private void runAprilTagAlign(TagView tag, long now) {
+    /**
+     * Drives the robot so the tag ends up right above its center (plus your offsets).
+     * While the tag is visible it steers by what the Limelight sees. If the tag leaves the camera's view
+     * on the way in, it finishes the last stretch with the Pinpoint, driving the same direction.
+     */
+    private void runAprilTagAlign(TagView tag, long now, double robotX, double robotY, double robotHeadingDeg) {
         if (now - alignStartMs > Config.ALIGN_TIMEOUT_MS) {
             cancelAssist("ALIGN TIMEOUT");
             return;
         }
-        if (tag == null) {
-            stopDrive();
-            long timeoutMs = alignTagSeen ? 700 : 5000; // give you 5 sec to aim at the tags first
-            assistStatus = alignTagSeen ? "TAG LOST - SEARCHING" : "NO TAG YET - POINT CAMERA AT CELL";
-            if (now - lastAlignTagSeenMs > timeoutMs) {
-                cancelAssist(alignTagSeen ? "TAG LOST" : "NO TAG FOUND (see Tag Debug)");
+
+        double tolerance = Math.max(0.5, Config.ALIGN_TOLERANCE_IN);
+        double errForward, errRight; // how far the robot still has to move (forward / right)
+        boolean tagInView = tag != null;
+
+        if (tagInView) {
+            alignTagSeen = true;
+            lastAlignTagSeenMs = now;
+            errForward = tag.forwardIn - Config.ALIGN_TARGET_FORWARD_IN;
+            errRight = tag.rightIn - targetRightIn();
+            alignLastErrForward(errForward, errRight, robotX, robotY);
+        } else {
+            if (!alignTagSeen) {
+                stopDrive();
+                assistStatus = "NO TAG YET - POINT THE LIMELIGHT AT A TAG";
+                if (now - alignStartMs > 3000) cancelAssist("NO TAG FOUND (see Tag Debug)");
+                return;
             }
+            double lastDistance = Math.hypot(alignLastErrF, alignLastErrR);
+            if (pinpoint == null || lastDistance > Config.ALIGN_BLIND_MAX_IN) {
+                cancelAssist("TAG LOST");
+                return;
+            }
+            // tag is out of view: count how far the Pinpoint says we have moved since the last good look
+            double traveled = Math.hypot(robotX - alignLastSeenX, robotY - alignLastSeenY);
+            double remaining = lastDistance - traveled;
+            if (remaining <= tolerance) {
+                cancelAssist("ALIGNED (tag out of view)");
+                return;
+            }
+            errForward = alignLastErrF * (remaining / lastDistance);
+            errRight = alignLastErrR * (remaining / lastDistance);
+        }
+
+        double distance = Math.hypot(errForward, errRight);
+        if (distance <= tolerance) {
+            cancelAssist("ALIGNED UNDER TAG " + (tagInView ? tag.tagId : ""));
             return;
         }
-        alignTagSeen = true;
-        lastAlignTagSeenMs = now;
 
-        double txError = tag.txDeg - Config.ALIGN_TX_OFFSET_DEG;
-        boolean aimed = Math.abs(txError) <= Config.HEADING_TOLERANCE_DEG;
+        // Safety: if the robot keeps getting farther from the tag, the direction settings are wrong
+        if (tagInView) {
+            if (alignStartErr < 0.0) alignStartErr = distance;
+            alignMinErr = Math.min(alignMinErr, distance);
+            if (now - alignStartMs > 600 && distance > alignMinErr + Config.ALIGN_DIVERGE_IN) {
+                cancelAssist("MOVING AWAY FROM TAG - flip TAG_FORWARD_NEGATE or TAG_RIGHT_NEGATE");
+                return;
+            }
+            if (now - alignStartMs > 1500 && alignMinErr > alignStartErr - 1.0) {
+                cancelAssist("NOT GETTING CLOSER - check the axis and NEGATE settings");
+                return;
+            }
+        }
+
+        // Mecanum: move straight at the spot (forward and sideways together)
+        double speed = clip(distance * Config.ALIGN_KP, 0.0, Config.ALIGN_MAX_SPEED);
+        speed = Math.max(speed, Config.ALIGN_MIN_SPEED);
+        double forward = speed * errForward / distance;
+        double strafeRight = speed * errRight / distance;
+
         double turn = 0.0;
-        if (!aimed) {
-            turn = clip(txError * Config.HEADING_KP, -Config.MAX_AUTO_TURN, Config.MAX_AUTO_TURN);
-            // small errors give power too weak to move the robot, so use a minimum push
-            turn = Math.copySign(Math.max(Math.abs(turn), Config.MIN_AUTO_TURN), turn);
+        if (Config.ALIGN_HOLD_HEADING && pinpoint != null) {
+            double headingError = normalizeDegrees(alignHoldHeadingDeg - robotHeadingDeg); // + = need to turn CCW
+            turn = clip(-headingError * Config.ALIGN_HEADING_KP, -Config.ALIGN_MAX_TURN, Config.ALIGN_MAX_TURN);
         }
 
-        double forward = 0.0;
-        boolean rangeOk = true;
-        double distErr = 0.0;
-        if (!Double.isNaN(tag.distanceIn)) {
-            distErr = tag.distanceIn - (Config.TARGET_STANDOFF_IN + Config.ALIGN_DISTANCE_OFFSET_IN);
-            rangeOk = Math.abs(distErr) <= Config.POSITION_TOLERANCE_IN;
-            if (!rangeOk) {
-                forward = clip(distErr * Config.POSITION_KP,
-                        -Config.MAX_AUTO_TRANSLATION, Config.MAX_AUTO_TRANSLATION);
-                forward = Math.copySign(Math.max(Math.abs(forward), Config.MIN_AUTO_FORWARD), forward);
-            }
-        }
+        setRobotDrive(forward, strafeRight, turn);
+        alignDebug = String.format(Locale.US, "to go: fwd %.1f in, right %.1f in | cmd fwd %.2f, strafe %.2f%s",
+                errForward, errRight, forward, strafeRight, tagInView ? "" : " (tag out of view)");
+        assistStatus = String.format(Locale.US, "ALIGNING %s: %.1f in to go",
+                tagInView ? "TAG " + tag.tagId : "(blind)", distance);
+    }
 
-        if (aimed && rangeOk) {
-            cancelAssist("ALIGNED TO TAG " + tag.tagId);
-            return;
-        }
-
-        alignDebug = String.format(Locale.US, "tx %.1f (offset %.1f) -> turn cmd %.2f | dist %.1f vs target %.1f -> fwd cmd %.2f",
-                tag.txDeg, Config.ALIGN_TX_OFFSET_DEG, turn, tag.distanceIn,
-                Config.TARGET_STANDOFF_IN + Config.ALIGN_DISTANCE_OFFSET_IN, forward);
-        if (Config.REVERSE_ALIGN_TURN) turn = -turn;
-        if (Config.REVERSE_ALIGN_FORWARD) forward = -forward;
-        setRobotDrive(forward, 0.0, turn);
-        assistStatus = String.format(Locale.US, "ALIGNING TAG %d: aim err %.1f°, range err %.1f in",
-                tag.tagId, txError, distErr);
+    private void alignLastErrForward(double errForward, double errRight, double robotX, double robotY) {
+        alignLastErrF = errForward;
+        alignLastErrR = errRight;
+        alignLastSeenX = robotX;
+        alignLastSeenY = robotY;
     }
 
     // =====================================================================
@@ -762,6 +949,18 @@ public class BASE extends LinearOpMode {
             return;
         }
         if (target == null) {
+            // Balls vanishing at the bottom of the picture means they are right at the intake: push in a little
+            if (ballSeen && Config.BALL_BLIND_PUSH_MS > 0 && lastBallY >= Config.BALL_BLIND_MIN_Y) {
+                if (ballBlindStartMs == 0) ballBlindStartMs = now;
+                if (now - ballBlindStartMs <= Config.BALL_BLIND_PUSH_MS) {
+                    double blind = Config.BALL_CAMERA_ON_BACK ? -Config.MIN_BALL_FORWARD : Config.MIN_BALL_FORWARD;
+                    setRobotDrive(blind, 0.0, 0.0);
+                    assistStatus = "FINAL PUSH";
+                } else {
+                    cancelAssist("AT BALLS (final push)");
+                }
+                return;
+            }
             stopDrive();
             long timeoutMs = ballSeen ? 700 : 3000;
             assistStatus = ballSeen ? "BALLS LOST - SEARCHING" : "NO BALLS YET - POINT CAMERA AT THEM";
@@ -771,6 +970,8 @@ public class BASE extends LinearOpMode {
             return;
         }
         ballSeen = true;
+        lastBallY = target.yFraction;
+        ballBlindStartMs = 0;
         lastBlobSeenMs = now;
 
         boolean centered = Math.abs(target.txDeg) <= Config.BALL_CENTER_TOLERANCE_DEG;
@@ -822,12 +1023,17 @@ public class BASE extends LinearOpMode {
         telemetry.addLine("=== BIOBUZZ TELEOP ===");
         telemetry.addData("Battery", "%.2f V %s", volts, volts < 12.0 ? "(LOW!)" : "(GOOD)");
         telemetry.addData("Alliance", Config.RED_ALLIANCE ? "RED (cell tags 30-37)" : "BLUE (cell tags 38-45)");
+        telemetry.addData("Drive mode", Config.FIELD_CENTRIC ? "FIELD-CENTRIC" : "ROBOT-CENTRIC");
         telemetry.addData("Tag Align (A)", Config.ENABLE_APRILTAG_AUTO_ALIGN ? "ENABLED" : "DISABLED");
         telemetry.addData("Ball Approach (B)", Config.ENABLE_BLOB_AUTO_APPROACH ? "ENABLED" : "DISABLED");
+        telemetry.addData("Drive motors found", "FL %s | FR %s | BL %s | BR %s",
+                frontLeft != null ? "yes" : "NO", frontRight != null ? "yes" : "NO",
+                backLeft != null ? "yes" : "NO", backRight != null ? "yes" : "NO");
 
         telemetry.addLine("--- SENSORS ---");
         telemetry.addData("Limelight", limelight != null && limelight.isConnected() ? "CONNECTED" : "DISCONNECTED");
         telemetry.addData("Webcam", webcamStatus);
+        telemetry.addData("RGB light", rgbLight != null ? "FOUND" : "NOT FOUND (check config name)");
         telemetry.addData("Pinpoint", pinpoint != null
                 ? String.format(Locale.US, "X %.1f, Y %.1f, H %.1f°",
                 pinpoint.getPosX(DistanceUnit.INCH), pinpoint.getPosY(DistanceUnit.INCH),
@@ -836,7 +1042,7 @@ public class BASE extends LinearOpMode {
 
         telemetry.addLine("--- CONTROLS ---");
         telemetry.addLine("[X] Toggle alliance | [A] Align to cell | [B] Go to balls");
-        telemetry.addLine("[Y / Options] Re-zero heading | [LB] Field/Robot-centric | [RB + D-Pad] Wheel test");
+        telemetry.addLine("[Y / Options] Re-zero heading | [D-Pad Left] Field/Robot-centric | [RB + D-Pad] Wheel test");
         telemetry.update();
     }
 
@@ -847,11 +1053,14 @@ public class BASE extends LinearOpMode {
         telemetry.addData("Drive", !Config.FIELD_CENTRIC ? "ROBOT-CENTRIC"
                 : (pinpoint == null ? "FIELD-CENTRIC (NO PINPOINT - acting robot-centric)" : "FIELD-CENTRIC"));
         telemetry.addData("Heading vs Zero", "%.1f°", normalizeDegrees(robotHeadingDeg - fieldHeadingOffsetDeg));
-        telemetry.addData("Alliance / Battery", "%s | %.2f V", Config.RED_ALLIANCE ? "RED" : "BLUE", volts);
+        telemetry.addData("Alliance / Battery", "%s | %.2f V", lockedRed ? "RED" : "BLUE", volts);
         telemetry.addData("Pose", "X %5.1f | Y %5.1f | H %5.1f°", robotX, robotY, robotHeadingDeg);
-        telemetry.addData("Cell Tags", tag != null
-                ? String.format(Locale.US, "Tag #%d (%d allowed in view) tx %+.1f°, dist %.1f in",
-                tag.tagId, tag.tagCount, tag.txDeg, tag.distanceIn)
+        telemetry.addData("Tag", tag != null
+                ? String.format(Locale.US, "#%d (%d allowed in view) | forward %.1f in, right %.1f in",
+                tag.tagId, tag.tagCount, tag.forwardIn, tag.rightIn)
+                : "None");
+        telemetry.addData("Tag raw (x, y, z in)", tag != null
+                ? String.format(Locale.US, "%.1f, %.1f, %.1f", tag.rawX, tag.rawY, tag.rawZ)
                 : "None");
         telemetry.addData("Tag Debug", tagDebug);
         telemetry.addData("Align Debug", alignDebug);
@@ -921,14 +1130,14 @@ public class BASE extends LinearOpMode {
         private final Mat maskUp = new Mat();
         private final Mat kernel = Imgproc.getStructuringElement(Imgproc.MORPH_RECT, new org.opencv.core.Size(3, 3));
         private final List<MatOfPoint> contours = new ArrayList<>();
-        private final double scale = 0.5; // work on a 320x240 copy to keep the loop fast
 
         @Override
         public Mat processFrame(Mat input) {
             try {
+                final double scale = input.cols() > 400 ? 0.5 : 1.0; // always work on about 320x240
                 Imgproc.resize(input, small, new org.opencv.core.Size(input.cols() * scale, input.rows() * scale),
                         0, 0, Imgproc.INTER_AREA);
-                Imgproc.GaussianBlur(small, blurred, new org.opencv.core.Size(5, 5), 0);
+                Imgproc.GaussianBlur(small, blurred, new org.opencv.core.Size(3, 3), 0);
                 Imgproc.cvtColor(blurred, rgb, Imgproc.COLOR_RGBA2RGB);
                 Imgproc.cvtColor(rgb, hsv, Imgproc.COLOR_RGB2HSV);
                 Core.inRange(hsv,
@@ -997,27 +1206,42 @@ public class BASE extends LinearOpMode {
                     }
                 }
 
+                int capacity = Math.max(1, Config.BALL_CAPACITY);
                 int[] groupCount = new int[m];
-                double[] sumX = new double[m], bottom = new double[m];
+                double[] bottom = new double[m];
                 for (int i = 0; i < m; i++) {
                     BallBlob b = blobs.get(i);
                     int root = findRoot(parent, i);
                     groupCount[root] += b.count;
-                    sumX[root] += b.cx * b.count;
                     bottom[root] = Math.max(bottom[root], b.bottom);
                 }
 
-                // ----- 4: biggest group wins, closest (lowest in the image) breaks ties -----
+                // ----- 4: the robot only holds 'capacity' balls, so a group counts as at most that many.
+                // The group with the highest count wins; if they tie, the closest (lowest in the image) wins. -----
                 int best = -1;
                 for (int i = 0; i < m; i++) {
                     if (groupCount[i] == 0) continue;
-                    if (best < 0 || groupCount[i] > groupCount[best]
-                            || (groupCount[i] == groupCount[best] && bottom[i] > bottom[best])) {
+                    int score = Math.min(groupCount[i], capacity);
+                    int bestScore = best < 0 ? 0 : Math.min(groupCount[best], capacity);
+                    if (best < 0 || score > bestScore || (score == bestScore && bottom[i] > bottom[best])) {
                         best = i;
                     }
                 }
 
-                double centerX = sumX[best] / groupCount[best];
+                // Aim at the closest balls of that group, up to the robot's capacity
+                List<BallBlob> members = new ArrayList<>();
+                for (int i = 0; i < m; i++) {
+                    if (findRoot(parent, i) == best) members.add(blobs.get(i));
+                }
+                Collections.sort(members, (p1, p2) -> Double.compare(p2.bottom, p1.bottom)); // closest first
+                double sumX = 0.0;
+                double taken = 0.0;
+                for (BallBlob mb : members) {
+                    if (taken >= capacity) break;
+                    sumX += mb.cx * mb.count;
+                    taken += mb.count;
+                }
+                double centerX = sumX / taken;
                 double tx = ((centerX / small.cols()) - 0.5) * Config.WEBCAM_HFOV_DEG;
                 double yFraction = bottom[best] / small.rows();
                 latestBalls = new BallTarget(groupCount[best], tx, yFraction);
