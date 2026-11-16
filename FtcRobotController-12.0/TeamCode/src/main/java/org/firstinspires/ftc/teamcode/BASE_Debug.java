@@ -41,13 +41,16 @@ import java.util.Locale;
 import java.util.concurrent.TimeUnit;
 
 /**
- * BIOBUZZ TeleOp (Debug Version with Enhanced Limelight AprilTag Localization & Tuneable Servo Control with Speed Ramping and Auto-Return Timer)
+ * BIOBUZZ TeleOp (Debug Version with Enhanced Limelight AprilTag Localization, Tuneable Servo & Ramped Shooter Motor)
  *
  * Controls (Gamepad 1):
  *  - Sticks: field-centric mecanum drive
  *  - Y / Options: re-zero field heading
  *  - A: AprilTag align (Limelight): drives right UNDER the closest tag from Config.ALIGN_TAG_IDS (toggle, sticks cancel it)
  *  - B: drive to the biggest group of yellow balls seen by Webcam 1 (toggle, sticks cancel it)
+ *  - LT: Intake IN (pulls items in at INTAKE_IN_POWER)
+ *  - LB: Intake OUT (ejects items out at INTAKE_OUT_POWER)
+ *  - RT: Shooter ON (smooth 1-second power ramp-up to SHOOTER_TARGET_POWER, e.g. 80% power)
  *  - X (during TeleOp): toggle custom servo between Pos 1 and Pos 2 (starts auto-return timer if enabled)
  *  - X (during init): switch RED / BLUE alliance
  *  - D-Pad Up / Down (TeleOp): set custom servo to Pos 1 / Pos 2
@@ -71,6 +74,7 @@ public class BASE_Debug extends LinearOpMode {
         public static String WEBCAM_NAME = "Webcam 1";         // Hardware configuration name for Logitech/OpenCV USB Webcam
         public static String RGB_LIGHT_NAME = "rgb_light";     // Hardware configuration name for goBILDA RGB Indicator Light (Servo)
         public static String INTAKE_NAME = "intake";           // Hardware configuration name for Intake motor
+        public static String SHOOTER_NAME = "shooter";         // Hardware configuration name for Shooter motor
         public static String SERVO_NAME = "servo";             // Hardware configuration name for tuneable custom Servo
 
         // ---------- Tuneable Servo Control & Speed Ramping ----------
@@ -79,8 +83,8 @@ public class BASE_Debug extends LinearOpMode {
         public static double SERVO_ANGLE_MIN_DEG = 0.0;       // Physical minimum mechanical angle of servo in degrees (maps to 0.0 position)
         public static double SERVO_ANGLE_MAX_DEG = 180.0;     // Physical maximum mechanical angle of servo in degrees (maps to 1.0 position)
         public static double SERVO_ANGLE_POS1_DEG = 0.0;      // Target Position 1 angle in degrees (default rest / retracted position)
-        public static double SERVO_ANGLE_POS2_DEG = 90.0;     // Target Position 2 angle in degrees (default active / extended position)
-        public static double SERVO_SPEED_DEG_PER_SEC = 180.0; // Maximum speed limit in degrees per second (0 = instant max hardware speed)
+        public static double SERVO_ANGLE_POS2_DEG = 5.0;      // Target Position 2 angle in degrees (default active / extended position)
+        public static double SERVO_SPEED_DEG_PER_SEC = 180.0; // Maximum speed limit in degrees per second (0 = instant hardware max speed)
         public static double SERVO_RAMP_ACCEL_DEG_SEC2 = 360.0; // Acceleration limit in deg/sec² for smooth speed ramping (0 = instant speed change)
         public static double SERVO_RAMP_DECEL_DISTANCE_DEG = 15.0; // Distance in degrees to begin decelerating smoothly near target angle (0 = no decel ramp)
 
@@ -193,12 +197,19 @@ public class BASE_Debug extends LinearOpMode {
         public static boolean REVERSE_INTAKE = false;         // Reverse intake motor spinning direction
         public static double INTAKE_IN_POWER = 0.5;           // Motor power when pulling items IN (Left Trigger)
         public static double INTAKE_OUT_POWER = 1.0;          // Motor power when ejecting items OUT (Left Bumper)
-        public static double TRIGGER_THRESHOLD = 0.1;         // Trigger threshold to activate intake
+        public static double TRIGGER_THRESHOLD = 0.1;         // Trigger threshold to activate intake / shooter
+
+        // ---------- Tuneable Shooter Motor Settings & Ramping ----------
+        public static boolean SHOOTER_ENABLED = true;          // Enable or disable shooter motor control loop
+        public static boolean REVERSE_SHOOTER = false;         // Reverse shooter motor spinning direction
+        public static double SHOOTER_TARGET_POWER = 0.80;      // Target motor power when Right Trigger is pressed (0.80 = 80% power)
+        public static long SHOOTER_RAMP_UP_MS = 1000;          // Power ramp-up duration in milliseconds (e.g. 1000ms = 1 second ramp)
     }
 
     // ---------- Hardware Devices ----------
     private DcMotor frontLeft, frontRight, backLeft, backRight;
     private DcMotor intake;
+    private DcMotor shooter;
     private Servo customServo;
     private GoBildaPinpointDriver pinpoint;
     private Limelight3A limelight;
@@ -217,6 +228,10 @@ public class BASE_Debug extends LinearOpMode {
     // ---------- Tuneable Servo Timer State ----------
     private long servoPos2StartMs = 0;
     private boolean servoTimerActive = false;
+
+    // ---------- Tuneable Shooter Ramping State ----------
+    private long shooterRampStartMs = 0;
+    private double currentShooterPower = 0.0;
 
     // ---------- Webcam Ball Detection ----------
     private final BallPipeline ballPipeline = new BallPipeline();
@@ -347,6 +362,7 @@ public class BASE_Debug extends LinearOpMode {
             handleButtons(now);
 
             runIntake();
+            runShooter(now);
 
             boolean manualOverride = hasManualStickInput();
             if (manualOverride && (autoAlignActive || blobApproachActive)) {
@@ -375,6 +391,7 @@ public class BASE_Debug extends LinearOpMode {
         // ---------- SHUTDOWN ----------
         stopDrive();
         if (intake != null) intake.setPower(0.0);
+        if (shooter != null) shooter.setPower(0.0);
         if (limelight != null) limelight.stop();
         if (webcam != null) {
             webcam.stopStreaming();
@@ -472,6 +489,15 @@ public class BASE_Debug extends LinearOpMode {
             intake.setMode(DcMotor.RunMode.RUN_WITHOUT_ENCODER);
         } catch (Exception e) {
             intake = null;
+        }
+
+        try {
+            shooter = hardwareMap.get(DcMotor.class, Config.SHOOTER_NAME);
+            shooter.setDirection(Config.REVERSE_SHOOTER ? DcMotor.Direction.REVERSE : DcMotor.Direction.FORWARD);
+            shooter.setZeroPowerBehavior(DcMotor.ZeroPowerBehavior.FLOAT);
+            shooter.setMode(DcMotor.RunMode.RUN_WITHOUT_ENCODER);
+        } catch (Exception e) {
+            shooter = null;
         }
     }
 
@@ -844,6 +870,24 @@ public class BASE_Debug extends LinearOpMode {
         }
     }
 
+    private void runShooter(long now) {
+        if (shooter == null || !Config.SHOOTER_ENABLED) return;
+        if (gamepad1.right_trigger > Config.TRIGGER_THRESHOLD) {
+            if (shooterRampStartMs == 0) {
+                shooterRampStartMs = now;
+            }
+            double rampFrac = Config.SHOOTER_RAMP_UP_MS > 0
+                    ? clip((double) (now - shooterRampStartMs) / Config.SHOOTER_RAMP_UP_MS, 0.0, 1.0)
+                    : 1.0;
+            currentShooterPower = Config.SHOOTER_TARGET_POWER * rampFrac;
+            shooter.setPower(currentShooterPower);
+        } else {
+            shooterRampStartMs = 0;
+            currentShooterPower = 0.0;
+            shooter.setPower(0.0);
+        }
+    }
+
     private void stopDrive() {
         if (frontLeft != null) frontLeft.setPower(0.0);
         if (frontRight != null) frontRight.setPower(0.0);
@@ -1211,7 +1255,7 @@ public class BASE_Debug extends LinearOpMode {
                 frontLeft != null ? "yes" : "NO", frontRight != null ? "yes" : "NO",
                 backLeft != null ? "yes" : "NO", backRight != null ? "yes" : "NO");
 
-        telemetry.addLine("--- SENSORS ---");
+        telemetry.addLine("--- SENSORS & ACTUATORS ---");
         telemetry.addData("Limelight", limelight != null && limelight.isConnected() ? "CONNECTED" : "DISCONNECTED");
         telemetry.addData("Webcam", webcamStatus);
         telemetry.addData("RGB light", rgbLight != null ? "FOUND" : "NOT FOUND (check config name)");
@@ -1220,13 +1264,17 @@ public class BASE_Debug extends LinearOpMode {
                 pinpoint.getPosX(DistanceUnit.INCH), pinpoint.getPosY(DistanceUnit.INCH),
                 headingDeg())
                 : "DISCONNECTED");
+        telemetry.addData("Shooter", shooter != null
+                ? String.format(Locale.US, "%s (Name: '%s') | Ramp: %dms -> %.0f%% power", Config.SHOOTER_ENABLED ? "ENABLED" : "DISABLED", Config.SHOOTER_NAME, Config.SHOOTER_RAMP_UP_MS, Config.SHOOTER_TARGET_POWER * 100.0)
+                : "NOT FOUND (Name: '" + Config.SHOOTER_NAME + "')");
         telemetry.addData("Custom Servo", customServo != null
-                ? String.format(Locale.US, "%s (name: '%s') | Timer: %s (%dms)",
+                ? String.format(Locale.US, "%s (Name: '%s') | Timer: %s (%dms)",
                 Config.SERVO_ENABLED ? "ENABLED" : "DISABLED", Config.SERVO_NAME,
                 Config.SERVO_AUTO_TIMER_ENABLED ? "AUTO" : "MANUAL", Config.SERVO_TIMER_HOLD_MS)
-                : "NOT FOUND (name: '" + Config.SERVO_NAME + "')");
+                : "NOT FOUND (Name: '" + Config.SERVO_NAME + "')");
 
         telemetry.addLine("--- CONTROLS ---");
+        telemetry.addLine("[LT] Intake IN | [LB] Intake OUT | [RT] Shooter (Ramped 80% power)");
         telemetry.addLine("[X] Toggle Alliance (Init) / Servo Pos (TeleOp)");
         telemetry.addLine("[A] Align to cell | [B] Go to balls | [D-Pad Up/Down] Servo Pos 1/2");
         telemetry.addLine("[Y / Options] Re-zero heading | [D-Pad Left] Field/Robot-centric | [RB + D-Pad] Wheel test");
@@ -1246,6 +1294,9 @@ public class BASE_Debug extends LinearOpMode {
         telemetry.addData("Heading vs Zero", "%.1f°", normalizeDegrees(robotHeadingDeg - fieldHeadingOffsetDeg));
         telemetry.addData("Alliance / Battery", "%s | %.2f V", lockedRed ? "RED" : "BLUE", volts);
         telemetry.addData("Pose", "X %5.1f | Y %5.1f | H %5.1f°", robotX, robotY, robotHeadingDeg);
+        telemetry.addData("Shooter", shooter != null
+                ? (currentShooterPower > 0 ? String.format(Locale.US, "RAMPING/ON (%.0f%% / target %.0f%% | %dms ramp)", currentShooterPower * 100.0, Config.SHOOTER_TARGET_POWER * 100.0, Config.SHOOTER_RAMP_UP_MS) : "OFF")
+                : "None");
         telemetry.addData("Servo", customServo != null
                 ? String.format(Locale.US, "%s %s| Target %.1f° | Actual %.1f° | Speed %.0f°/s (Accel %.0f)",
                 servoStatePos1 ? "POS 1" : "POS 2",
