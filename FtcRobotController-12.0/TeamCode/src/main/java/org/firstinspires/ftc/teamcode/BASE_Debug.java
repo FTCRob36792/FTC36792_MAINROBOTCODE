@@ -41,171 +41,163 @@ import java.util.Locale;
 import java.util.concurrent.TimeUnit;
 
 /**
- * BIOBUZZ TeleOp (Debug Version with Enhanced Limelight AprilTag Localization & Tuneable Servo Control)
+ * BIOBUZZ TeleOp (Debug Version with Enhanced Limelight AprilTag Localization & Tuneable Servo Control with Speed Ramping and Auto-Return Timer)
  *
  * Controls (Gamepad 1):
  *  - Sticks: field-centric mecanum drive
  *  - Y / Options: re-zero field heading
  *  - A: AprilTag align (Limelight): drives right UNDER the closest tag from Config.ALIGN_TAG_IDS (toggle, sticks cancel it)
  *  - B: drive to the biggest group of yellow balls seen by Webcam 1 (toggle, sticks cancel it)
- *  - X (during TeleOp): toggle custom servo between Pos 1 and Pos 2
+ *  - X (during TeleOp): toggle custom servo between Pos 1 and Pos 2 (starts auto-return timer if enabled)
  *  - X (during init): switch RED / BLUE alliance
  *  - D-Pad Up / Down (TeleOp): set custom servo to Pos 1 / Pos 2
  *  - RB + D-Pad: single-wheel direction test
  *
- * Limelight setup: AprilTag pipeline, family 36h11, tag size 82.5 mm (3.25 in), and the camera position
- * entered on the Limelight settings page so tag positions are measured from the robot's center.
+ * Limelight setup: AprilTag pipeline, family 36h11, tag size 82.5 mm (3.25 in), and camera position
+ * entered on Limelight settings page so tag positions are measured from robot center.
  */
 @TeleOp(name = "BIOBUZZ TeleOp (Debug)", group = "BIOBUZZ")
 public class BASE_Debug extends LinearOpMode {
 
     @com.acmerobotics.dashboard.config.Config
     public static class Config {
-        // ---------- Hardware names (must match the Robot Configuration) ----------
-        public static String FRONT_LEFT_NAME = "front_left";
-        public static String FRONT_RIGHT_NAME = "back_right";
-        public static String BACK_LEFT_NAME = "back_left";
-        public static String BACK_RIGHT_NAME = "front_right";
-        public static String PINPOINT_NAME = "pinpoint";
-        public static String LIMELIGHT_NAME = "limelight";
-        public static String WEBCAM_NAME = "Webcam 1";
-        public static String RGB_LIGHT_NAME = "rgb_light";   // goBILDA RGB Indicator Light (set up as a plain "Servo")
+        // ---------- Hardware Names (must match the Robot Configuration in FTC Robot Controller) ----------
+        public static String FRONT_LEFT_NAME = "front_left";   // Hardware configuration name for Front Left drive motor
+        public static String FRONT_RIGHT_NAME = "back_right";  // Hardware configuration name for Front Right drive motor
+        public static String BACK_LEFT_NAME = "back_left";     // Hardware configuration name for Back Left drive motor
+        public static String BACK_RIGHT_NAME = "front_right";  // Hardware configuration name for Back Right drive motor
+        public static String PINPOINT_NAME = "pinpoint";       // Hardware configuration name for goBILDA Pinpoint Odometry Computer
+        public static String LIMELIGHT_NAME = "limelight";     // Hardware configuration name for Limelight 3A vision sensor
+        public static String WEBCAM_NAME = "Webcam 1";         // Hardware configuration name for Logitech/OpenCV USB Webcam
+        public static String RGB_LIGHT_NAME = "rgb_light";     // Hardware configuration name for goBILDA RGB Indicator Light (Servo)
+        public static String INTAKE_NAME = "intake";           // Hardware configuration name for Intake motor
+        public static String SERVO_NAME = "servo";             // Hardware configuration name for tuneable custom Servo
 
-        // ---------- Tuneable Servo Control ----------
-        public static boolean SERVO_ENABLED = true;
-        public static String SERVO_NAME = "servo";             // Hardware config name
-        public static boolean REVERSE_SERVO = false;           // Flip direction
-        public static double SERVO_ANGLE_MIN_DEG = 0.0;       // Minimum mechanical angle (degrees)
-        public static double SERVO_ANGLE_MAX_DEG = 180.0;     // Maximum mechanical angle (degrees)
-        public static double SERVO_ANGLE_POS1_DEG = 0.0;      // Target Position 1 (degrees)
-        public static double SERVO_ANGLE_POS2_DEG = 90.0;     // Target Position 2 (degrees)
-        public static double SERVO_SPEED_DEG_PER_SEC = 180.0; // Speed limit in deg/sec (0 = instant max speed)
+        // ---------- Tuneable Servo Control & Speed Ramping ----------
+        public static boolean SERVO_ENABLED = true;            // Enable or disable custom servo control loop
+        public static boolean REVERSE_SERVO = false;           // Reverse physical servo rotation direction
+        public static double SERVO_ANGLE_MIN_DEG = 0.0;       // Physical minimum mechanical angle of servo in degrees (maps to 0.0 position)
+        public static double SERVO_ANGLE_MAX_DEG = 180.0;     // Physical maximum mechanical angle of servo in degrees (maps to 1.0 position)
+        public static double SERVO_ANGLE_POS1_DEG = 0.0;      // Target Position 1 angle in degrees (default rest / retracted position)
+        public static double SERVO_ANGLE_POS2_DEG = 90.0;     // Target Position 2 angle in degrees (default active / extended position)
+        public static double SERVO_SPEED_DEG_PER_SEC = 180.0; // Maximum speed limit in degrees per second (0 = instant max hardware speed)
+        public static double SERVO_RAMP_ACCEL_DEG_SEC2 = 360.0; // Acceleration limit in deg/sec² for smooth speed ramping (0 = instant speed change)
+        public static double SERVO_RAMP_DECEL_DISTANCE_DEG = 15.0; // Distance in degrees to begin decelerating smoothly near target angle (0 = no decel ramp)
 
-        // ---------- RGB indicator light color (servo position) ----------
-        // Off 0.0 | Red 0.277 | Orange 0.333 | Yellow 0.388 | Sage 0.444 | Green 0.500
-        // Azure 0.555 | Blue 0.611 | Indigo 0.666 | Violet 0.722 | White 1.0
-        public static double RGB_LIGHT_POSITION = 0.555;      // approximate #4BB4CB (blue-cyan)
+        // ---------- Tunable Servo Auto-Return Timer ----------
+        public static boolean SERVO_AUTO_TIMER_ENABLED = true; // True = automatically return servo to Position 1 after holding Position 2
+        public static long SERVO_TIMER_HOLD_MS = 1500;        // Hold duration in milliseconds at Position 2 before auto-returning to Position 1 (0 = disabled)
 
-        // ---------- Motor reversals (use RB + D-Pad test to check) ----------
-        public static boolean REVERSE_FRONT_LEFT = true;
-        public static boolean REVERSE_FRONT_RIGHT = false;
-        public static boolean REVERSE_BACK_LEFT = true;
-        public static boolean REVERSE_BACK_RIGHT = false;
+        // ---------- RGB Indicator Light Configuration ----------
+        // Off 0.0 | Red 0.277 | Orange 0.333 | Yellow 0.388 | Sage 0.444 | Green 0.500 | Azure 0.555 | Blue 0.611 | Indigo 0.666 | Violet 0.722 | White 1.0
+        public static double RGB_LIGHT_POSITION = 0.555;      // Preset servo position for electric blue indicator color (#4BB4CB)
 
-        // ---------- Drive direction ----------
-        public static boolean INVERT_FORWARD = false; // true = the opposite end is the robot's front (also flips strafe)
-        public static boolean REVERSE_DRIVE_FORWARD = false; // correction: flip forward / backward commands
-        public static boolean REVERSE_DRIVE_TURN = false;    // correction: flip clockwise / counter-clockwise commands
+        // ---------- Motor Rotation Reversals ----------
+        public static boolean REVERSE_FRONT_LEFT = true;       // Flip rotation direction of Front Left drive motor
+        public static boolean REVERSE_FRONT_RIGHT = false;     // Flip rotation direction of Front Right drive motor
+        public static boolean REVERSE_BACK_LEFT = true;        // Flip rotation direction of Back Left drive motor
+        public static boolean REVERSE_BACK_RIGHT = false;      // Flip rotation direction of Back Right drive motor
 
-        // ---------- Field-centric ("swerve style") driving ----------
-        public static boolean FIELD_CENTRIC = true;          // true = swerve style, false = normal robot-centric
-        public static boolean REVERSE_HEADING = false;       // flip if the robot drives the wrong way after you turn it
-        public static boolean REVERSE_STRAFE_STICK = false;  // flip if left stick left/right is backwards
+        // ---------- Drive Direction Overrides ----------
+        public static boolean INVERT_FORWARD = false;          // True = opposite end of robot is front (flips forward & strafe commands together)
+        public static boolean REVERSE_DRIVE_FORWARD = false;   // Flip forward / backward driving commands
+        public static boolean REVERSE_DRIVE_TURN = false;      // Flip clockwise / counter-clockwise turning commands
 
-        // ---------- Pinpoint ----------
-        public static double PINPOINT_X_POD_OFFSET_MM = 0.0; // measure with a ruler
-        public static double PINPOINT_Y_POD_OFFSET_MM = 0.0; // measure with a ruler
-        public static boolean REVERSE_X_ENCODER = false;
-        public static boolean REVERSE_Y_ENCODER = false;
+        // ---------- Field-Centric ("Swerve Style") Driving ----------
+        public static boolean FIELD_CENTRIC = true;          // True = swerve style (stick direction relative to field), False = robot-centric
+        public static boolean REVERSE_HEADING = false;       // Flip heading direction if field drive moves wrong way after turning
+        public static boolean REVERSE_STRAFE_STICK = false;  // Flip left stick X direction if strafing is backwards
 
-        // ---------- Webcam exposure ----------
-        public static boolean WEBCAM_MANUAL_EXPOSURE = false;
-        public static long WEBCAM_EXPOSURE_MS = 15;
-        public static int WEBCAM_GAIN = 100;
+        // ---------- Pinpoint Odometry Calibration ----------
+        public static double PINPOINT_X_POD_OFFSET_MM = 0.0; // X pod offset from robot center in millimeters
+        public static double PINPOINT_Y_POD_OFFSET_MM = 0.0; // Y pod offset from robot center in millimeters
+        public static boolean REVERSE_X_ENCODER = false;       // Reverse X pod encoder counting direction
+        public static boolean REVERSE_Y_ENCODER = false;       // Reverse Y pod encoder counting direction
 
-        // ---------- Match setup ----------
-        public static boolean RED_ALLIANCE = true;
-        public static boolean ENABLE_APRILTAG_AUTO_ALIGN = true;
-        public static boolean ENABLE_BLOB_AUTO_APPROACH = true;
+        // ---------- Webcam Exposure & Gain Settings ----------
+        public static boolean WEBCAM_MANUAL_EXPOSURE = false;  // True = enable manual camera exposure/gain controls, False = auto exposure
+        public static long WEBCAM_EXPOSURE_MS = 15;            // Camera exposure time in milliseconds (when manual exposure is enabled)
+        public static int WEBCAM_GAIN = 100;                   // Camera gain level (when manual exposure is enabled)
 
-        // ---------- Start pose ----------
-        public static double START_X_IN = 0.0;
-        public static double START_Y_IN = 0.0;
-        public static double START_HEADING_DEG = 0.0;
+        // ---------- Match & Autonomous Setup ----------
+        public static boolean RED_ALLIANCE = true;             // Default alliance selection (True = RED, False = BLUE)
+        public static boolean ENABLE_APRILTAG_AUTO_ALIGN = true;// Safety lock for Gamepad 1 [A] AprilTag auto-align feature
+        public static boolean ENABLE_BLOB_AUTO_APPROACH = true;// Safety lock for Gamepad 1 [B] Yellow ball approach feature
 
-        // ---------- Driver / assist limits ----------
-        public static double STICK_DEADZONE = 0.16;
+        // ---------- Initial Robot Field Pose ----------
+        public static double START_X_IN = 0.0;                 // Initial X coordinate in inches for Pinpoint pose reset
+        public static double START_Y_IN = 0.0;                 // Initial Y coordinate in inches for Pinpoint pose reset
+        public static double START_HEADING_DEG = 0.0;          // Initial heading in degrees for Pinpoint pose reset
 
-        // ---------- AprilTag align: drive right UNDER the tag (Limelight) ----------
-        // The Limelight's position on the robot is set on the Limelight settings page, so the tag position it
-        // reports is measured from the robot's center.
-        public static int APRILTAG_PIPELINE = 0;              // Limelight pipeline number for AprilTags
+        // ---------- Driver Joystick Deadzone ----------
+        public static double STICK_DEADZONE = 0.16;             // Joystick deadzone threshold (stick inputs below this absolute value are ignored)
 
-        public static String RED_ALIGN_TAG_IDS = "31,35";    // tags to align to on RED
-        public static String BLUE_ALIGN_TAG_IDS = "39,43";   // tags to align to on BLUE
+        // ---------- AprilTag Alignment Parameters (Limelight 3A) ----------
+        public static int APRILTAG_PIPELINE = 0;              // Limelight pipeline index configured for AprilTag detection
+        public static String RED_ALIGN_TAG_IDS = "31,35";     // Comma-separated list of allowed AprilTag IDs on RED alliance
+        public static String BLUE_ALIGN_TAG_IDS = "39,43";    // Comma-separated list of allowed AprilTag IDs on BLUE alliance
 
-        // Pose space mode: true = getTargetPoseRobotSpace() [X=fwd, Y=right, Z=up], false = getTargetPoseCameraSpace() [X=right, Y=down, Z=fwd]
-        public static boolean USE_ROBOT_SPACE_POSE = true;
+        public static boolean USE_ROBOT_SPACE_POSE = true;    // True = getTargetPoseRobotSpace() [X=fwd, Y=right, Z=up], False = getTargetPoseCameraSpace() [X=right, Y=down, Z=fwd]
+        public static int TAG_FORWARD_AXIS = 0;               // Axis index for forward motion (0 = X, 1 = Y, 2 = Z)
+        public static int TAG_RIGHT_AXIS = 1;                 // Axis index for sideways right motion (0 = X, 1 = Y, 2 = Z)
+        public static boolean TAG_FORWARD_NEGATE = false;     // Negate forward target position if axis direction is inverted
+        public static boolean TAG_RIGHT_NEGATE = false;       // Negate right target position if axis direction is inverted
 
-        // Axis selection (0 = X, 1 = Y, 2 = Z).
-        // For Robot Space: Forward is Axis 0 (X), Right is Axis 1 (Y).
-        // For Camera Space: Forward is Axis 2 (Z), Right is Axis 0 (X).
-        public static int TAG_FORWARD_AXIS = 0;
-        public static int TAG_RIGHT_AXIS = 1;
-        public static boolean TAG_FORWARD_NEGATE = false;
-        public static boolean TAG_RIGHT_NEGATE = false;        // flip so right is + when the tag is to the robot's RIGHT
+        public static double ALIGN_TARGET_FORWARD_IN = 50.0;   // Desired target tag offset forward from robot center in inches
+        public static double ALIGN_TARGET_RIGHT_IN = 40.5;     // Desired target tag offset right from robot center in inches
+        public static boolean BLUE_MIRRORS_SIDE = true;        // True = negate right target offset for BLUE alliance
+        public static double ALIGN_TOLERANCE_IN = 1.5;        // Positional tolerance in inches to consider alignment complete
 
-        // Where the tag should end up, measured from the robot's center. 0 and 0 = exactly overhead.
-        public static double ALIGN_TARGET_FORWARD_IN = 50.0;   // + = tag ends up ahead of center
-        public static double ALIGN_TARGET_RIGHT_IN = 40.5;     // + = tag ends up to the right of center
+        public static double ALIGN_KP = 0.04;                 // Proportional gain for alignment drive speed per inch of error
+        public static double ALIGN_MAX_SPEED = 0.50;          // Maximum drive power limit during AprilTag alignment
+        public static double ALIGN_MIN_SPEED = 0.15;          // Minimum drive power threshold to overcome static friction
+        public static boolean ALIGN_HOLD_HEADING = true;      // True = lock robot heading with Pinpoint while sliding under tag
+        public static double ALIGN_HEADING_KP = 0.01;         // Proportional turn power gain per degree of heading error
+        public static double ALIGN_MAX_TURN = 0.15;           // Maximum turn power limit during heading hold
+        public static double ALIGN_BLIND_MAX_IN = 30.0;       // Maximum blind tracking distance in inches via Pinpoint when tag leaves view
+        public static double ALIGN_DIVERGE_IN = 8.0;          // Safety limit: abort alignment if robot moves this much farther from tag
+        public static long ALIGN_TIMEOUT_MS = 6000;           // Maximum alignment duration in milliseconds
 
-        public static boolean BLUE_MIRRORS_SIDE = true;        // blue puts the tag on the opposite side from red
-        public static double ALIGN_TOLERANCE_IN = 1.5;        // done when within this many inches
+        // ---------- Yellow Ball Vision Detection (Logitech Webcam) ----------
+        public static int HSV_H_MIN = 20;                     // Minimum Hue threshold (0-180) for yellow color detection
+        public static int HSV_H_MAX = 38;                     // Maximum Hue threshold (0-180) for yellow color detection
+        public static int HSV_S_MIN = 80;                     // Minimum Saturation threshold (0-255) for yellow color detection
+        public static int HSV_S_MAX = 255;                    // Maximum Saturation threshold (0-255) for yellow color detection
+        public static int HSV_V_MIN = 60;                     // Minimum Value/Brightness threshold (0-255) for yellow color detection
+        public static int HSV_V_MAX = 255;                    // Maximum Value/Brightness threshold (0-255) for yellow color detection
+        public static boolean SHOW_BALL_MASK = false;         // True = display binary vision mask on camera preview for tuning
+        public static double MIN_BALL_AREA_PX = 40.0;         // Minimum area in pixels for a valid yellow blob
+        public static double CLUSTER_DIST_DIAMETERS = 5.0;    // Maximum cluster distance in ball diameters to group nearby blobs
+        public static double WEBCAM_HFOV_DEG = 60.0;          // Horizontal field-of-view of webcam in degrees
 
-        public static double ALIGN_KP = 0.04;                 // speed per inch of error
-        public static double ALIGN_MAX_SPEED = 0.50;
-        public static double ALIGN_MIN_SPEED = 0.15;
-        public static boolean ALIGN_HOLD_HEADING = true;      // keep the robot facing the same way while it slides under (needs Pinpoint)
-        public static double ALIGN_HEADING_KP = 0.01;
-        public static double ALIGN_MAX_TURN = 0.15;
-        public static double ALIGN_BLIND_MAX_IN = 30.0;       // if the tag leaves the view closer than this, finish the move with the Pinpoint
-        public static double ALIGN_DIVERGE_IN = 8.0;          // safety: stops if it gets this much farther from the tag
-        public static long ALIGN_TIMEOUT_MS = 6000;           // auto align stops by itself after this long
+        // ---------- Yellow Ball Approach Parameters ----------
+        public static boolean BALL_CAMERA_ON_BACK = false;    // False = camera is mounted on front, True = camera mounted on back
+        public static boolean REVERSE_BALL_STRAFE = false;    // Reverse sideways strafe direction during ball approach
+        public static double BALL_STOP_Y_FRACTION = 0.97;     // Stop threshold when ball cluster bottom reaches image height fraction (0 = top, 1 = bottom)
+        public static double BALL_FORWARD_KP = 4.0;           // Proportional gain for forward drive power per image height error
+        public static double BALL_STRAFE_KP = 0.04;           // Proportional gain for strafe power per degree off-center
+        public static double BALL_CENTER_TOLERANCE_DEG = 3.0; // Centering tolerance in degrees
+        public static double BALL_MAX_SPEED = 1.00;           // Maximum forward drive speed toward balls
+        public static double MIN_BALL_FORWARD = 0.40;         // Minimum forward drive power toward balls
+        public static double BALL_MAX_STRAFE = 0.80;          // Maximum strafe power toward balls
+        public static double BALL_MIN_STRAFE = 0.30;          // Minimum strafe power toward balls
+        public static boolean BALL_HOLD_HEADING = true;       // True = lock heading with Pinpoint while approaching balls
+        public static double BALL_HEADING_KP = 0.01;          // Proportional gain for heading hold during ball approach
+        public static double BALL_MAX_TURN = 0.15;            // Maximum turn power limit during ball approach heading hold
+        public static int BALL_CAPACITY = 4;                  // Maximum ball storage capacity of robot
+        public static long BALL_BLIND_PUSH_MS = 300;          // Final blind push duration in milliseconds when balls slip below camera view
+        public static double BALL_BLIND_MIN_Y = 0.85;         // Minimum Y image fraction required to trigger final blind push
+        public static long BALL_TIMEOUT_MS = 6000;            // Ball approach timeout in milliseconds
 
-        // ---------- Yellow ball detection (Logitech webcam, "Webcam 1") ----------
-        // HSV colors: tune on the Dashboard camera stream. Turn SHOW_BALL_MASK on to see what counts as yellow.
-        public static int HSV_H_MIN = 20;
-        public static int HSV_H_MAX = 38;
-        public static int HSV_S_MIN = 80;
-        public static int HSV_S_MAX = 255;
-        public static int HSV_V_MIN = 60;
-        public static int HSV_V_MAX = 255;
-        public static boolean SHOW_BALL_MASK = false;       // true = camera stream shows white where it sees yellow
-        public static double MIN_BALL_AREA_PX = 40.0;       // smallest yellow blob that counts (in a 320x240 image)
-        public static double CLUSTER_DIST_DIAMETERS = 5.0;  // balls closer than this many ball-widths = same group
-        public static double WEBCAM_HFOV_DEG = 60.0;        // webcam field of view (C270 is about 60)
-
-        // ---------- Ball approach (B button) ----------
-        public static boolean BALL_CAMERA_ON_BACK = false;  // false = camera is on the robot's front (it is now). true = camera is on the back
-        public static boolean REVERSE_BALL_STRAFE = false;  // flip if it slides AWAY from the balls sideways
-        public static double BALL_STOP_Y_FRACTION = 0.97;   // stops when the group's bottom reaches this height in the image (0 = top, 1 = bottom)
-        public static double BALL_FORWARD_KP = 4.0;         // drive power per image-height error
-        public static double BALL_STRAFE_KP = 0.04;         // sideways power per degree off-center
-        public static double BALL_CENTER_TOLERANCE_DEG = 3.0;
-        public static double BALL_MAX_SPEED = 1.00;         // top driving speed toward the balls
-        public static double MIN_BALL_FORWARD = 0.40;       // slowest driving speed toward the balls
-        public static double BALL_MAX_STRAFE = 0.80;        // top sideways speed toward the balls
-        public static double BALL_MIN_STRAFE = 0.30;        // slowest sideways speed toward the balls
-        public static boolean BALL_HOLD_HEADING = true;     // keeps the robot facing the same way while it slides in (needs Pinpoint)
-        public static double BALL_HEADING_KP = 0.01;        // turn power per degree of heading drift
-        public static double BALL_MAX_TURN = 0.15;          // cap on the heading-hold turn
-        public static int BALL_CAPACITY = 4;                // most balls the robot can hold. A group counts as at most this many
-        public static long BALL_BLIND_PUSH_MS = 300;        // if the balls slip out of view at the bottom, keep driving this long (0 = off)
-        public static double BALL_BLIND_MIN_Y = 0.85;       // only do the final push if the balls were at least this low in the image
-
-        // ---------- Intake ----------
-        public static String INTAKE_NAME = "intake";
-        public static boolean REVERSE_INTAKE = false;
-        public static double INTAKE_IN_POWER = 0.5;
-        public static double INTAKE_OUT_POWER = 1.0;
-        public static double TRIGGER_THRESHOLD = 0.1;
-
-        public static long BALL_TIMEOUT_MS = 6000;          // stops by itself after this long
+        // ---------- Intake Motor Settings ----------
+        public static boolean REVERSE_INTAKE = false;         // Reverse intake motor spinning direction
+        public static double INTAKE_IN_POWER = 0.5;           // Motor power when pulling items IN (Left Trigger)
+        public static double INTAKE_OUT_POWER = 1.0;          // Motor power when ejecting items OUT (Left Bumper)
+        public static double TRIGGER_THRESHOLD = 0.1;         // Trigger threshold to activate intake
     }
 
-    // ---------- Hardware ----------
+    // ---------- Hardware Devices ----------
     private DcMotor frontLeft, frontRight, backLeft, backRight;
-
     private DcMotor intake;
     private Servo customServo;
     private GoBildaPinpointDriver pinpoint;
@@ -215,19 +207,24 @@ public class BASE_Debug extends LinearOpMode {
     private Servo rgbLight;
     private double lastRgbPosition = -1.0;
 
-    // ---------- Tuneable Servo State ----------
+    // ---------- Tuneable Servo State & Speed Ramping ----------
     private double targetServoAngleDeg = 0.0;
     private double currentServoAngleDeg = 0.0;
+    private double currentServoVelocityDegPerSec = 0.0;
     private long lastServoUpdateMs = 0;
     private boolean servoStatePos1 = true;
 
-    // ---------- Webcam ball detection ----------
+    // ---------- Tuneable Servo Timer State ----------
+    private long servoPos2StartMs = 0;
+    private boolean servoTimerActive = false;
+
+    // ---------- Webcam Ball Detection ----------
     private final BallPipeline ballPipeline = new BallPipeline();
     private volatile BallTarget latestBalls;
     private volatile long latestBallsMs = 0;
     private volatile String webcamStatus = "NOT INITIALIZED";
 
-    // ---------- State ----------
+    // ---------- OpMode State Variables ----------
     private boolean autoAlignActive = false;
     private boolean blobApproachActive = false;
     private boolean previousA = false, previousB = false, previousY = false, previousX = false;
@@ -446,6 +443,7 @@ public class BASE_Debug extends LinearOpMode {
             customServo = hardwareMap.get(Servo.class, Config.SERVO_NAME);
             targetServoAngleDeg = Config.SERVO_ANGLE_POS1_DEG;
             currentServoAngleDeg = Config.SERVO_ANGLE_POS1_DEG;
+            currentServoVelocityDegPerSec = 0.0;
         } catch (Exception e) {
             customServo = null;
         }
@@ -568,6 +566,10 @@ public class BASE_Debug extends LinearOpMode {
         }
     }
 
+    /**
+     * Updates tuneable servo position with smooth speed limiting, acceleration/deceleration ramping,
+     * and tunable auto-return timer.
+     */
     private void updateCustomServo(long now) {
         if (customServo == null || !Config.SERVO_ENABLED) return;
 
@@ -581,16 +583,55 @@ public class BASE_Debug extends LinearOpMode {
 
         if (dtSec <= 0.0) return;
 
-        // If speed limit is 0 or >= 720, move instantly to target angle
-        if (Config.SERVO_SPEED_DEG_PER_SEC <= 0.0 || Config.SERVO_SPEED_DEG_PER_SEC >= 720.0) {
+        // Auto-return timer check when servo is holding Position 2
+        if (Config.SERVO_AUTO_TIMER_ENABLED && servoTimerActive && !servoStatePos1 && Config.SERVO_TIMER_HOLD_MS > 0) {
+            if (now - servoPos2StartMs >= Config.SERVO_TIMER_HOLD_MS) {
+                servoStatePos1 = true;
+                servoTimerActive = false;
+            }
+        }
+
+        targetServoAngleDeg = servoStatePos1 ? Config.SERVO_ANGLE_POS1_DEG : Config.SERVO_ANGLE_POS2_DEG;
+
+        double distanceRemaining = Math.abs(targetServoAngleDeg - currentServoAngleDeg);
+        double dir = Math.signum(targetServoAngleDeg - currentServoAngleDeg);
+
+        if (distanceRemaining < 0.01) {
             currentServoAngleDeg = targetServoAngleDeg;
+            currentServoVelocityDegPerSec = 0.0;
+        } else if (Config.SERVO_SPEED_DEG_PER_SEC <= 0.0 || Config.SERVO_SPEED_DEG_PER_SEC >= 720.0) {
+            // Instant hardware max speed
+            currentServoAngleDeg = targetServoAngleDeg;
+            currentServoVelocityDegPerSec = 0.0;
         } else {
-            double maxStep = Config.SERVO_SPEED_DEG_PER_SEC * dtSec;
-            double diff = targetServoAngleDeg - currentServoAngleDeg;
-            if (Math.abs(diff) <= maxStep) {
-                currentServoAngleDeg = targetServoAngleDeg;
+            // Calculate top allowable speed for this frame based on deceleration distance ramp
+            double maxSpeed = Config.SERVO_SPEED_DEG_PER_SEC;
+
+            // Deceleration ramp: smooth slowdown as servo approaches target angle
+            if (Config.SERVO_RAMP_DECEL_DISTANCE_DEG > 0.0 && distanceRemaining < Config.SERVO_RAMP_DECEL_DISTANCE_DEG) {
+                double decelRamp = distanceRemaining / Config.SERVO_RAMP_DECEL_DISTANCE_DEG;
+                maxSpeed = Math.max(10.0, maxSpeed * decelRamp);
+            }
+
+            // Acceleration ramp: limit velocity change by acceleration limit
+            if (Config.SERVO_RAMP_ACCEL_DEG_SEC2 > 0.0) {
+                double maxVelChange = Config.SERVO_RAMP_ACCEL_DEG_SEC2 * dtSec;
+                if (currentServoVelocityDegPerSec < maxSpeed) {
+                    currentServoVelocityDegPerSec = Math.min(maxSpeed, currentServoVelocityDegPerSec + maxVelChange);
+                } else {
+                    currentServoVelocityDegPerSec = Math.max(maxSpeed, currentServoVelocityDegPerSec - maxVelChange);
+                }
             } else {
-                currentServoAngleDeg += Math.signum(diff) * maxStep;
+                currentServoVelocityDegPerSec = maxSpeed;
+            }
+
+            // Step angle by current velocity
+            double angleStep = currentServoVelocityDegPerSec * dtSec;
+            if (angleStep >= distanceRemaining) {
+                currentServoAngleDeg = targetServoAngleDeg;
+                currentServoVelocityDegPerSec = 0.0;
+            } else {
+                currentServoAngleDeg += dir * angleStep;
             }
         }
 
@@ -656,15 +697,25 @@ public class BASE_Debug extends LinearOpMode {
 
         if (pressedX) {
             servoStatePos1 = !servoStatePos1;
+            if (!servoStatePos1) {
+                servoPos2StartMs = now;
+                servoTimerActive = true;
+            } else {
+                servoTimerActive = false;
+            }
         }
 
         // D-Pad Up / Down (when Right Bumper is not held for motor test) toggles custom servo position
         if (!gamepad1.right_bumper) {
-            if (gamepad1.dpad_up) servoStatePos1 = true;
-            else if (gamepad1.dpad_down) servoStatePos1 = false;
+            if (gamepad1.dpad_up) {
+                servoStatePos1 = true;
+                servoTimerActive = false;
+            } else if (gamepad1.dpad_down) {
+                servoStatePos1 = false;
+                servoPos2StartMs = now;
+                servoTimerActive = true;
+            }
         }
-
-        targetServoAngleDeg = servoStatePos1 ? Config.SERVO_ANGLE_POS1_DEG : Config.SERVO_ANGLE_POS2_DEG;
 
         if (pressedY || pressedOptions) {
             if (pinpoint != null) fieldHeadingOffsetDeg = headingDeg();
@@ -1170,7 +1221,9 @@ public class BASE_Debug extends LinearOpMode {
                 headingDeg())
                 : "DISCONNECTED");
         telemetry.addData("Custom Servo", customServo != null
-                ? String.format(Locale.US, "%s (name: '%s')", Config.SERVO_ENABLED ? "ENABLED" : "DISABLED", Config.SERVO_NAME)
+                ? String.format(Locale.US, "%s (name: '%s') | Timer: %s (%dms)",
+                Config.SERVO_ENABLED ? "ENABLED" : "DISABLED", Config.SERVO_NAME,
+                Config.SERVO_AUTO_TIMER_ENABLED ? "AUTO" : "MANUAL", Config.SERVO_TIMER_HOLD_MS)
                 : "NOT FOUND (name: '" + Config.SERVO_NAME + "')");
 
         telemetry.addLine("--- CONTROLS ---");
@@ -1183,6 +1236,10 @@ public class BASE_Debug extends LinearOpMode {
     private void updateTelemetry(double robotX, double robotY, double robotHeadingDeg,
                                  TagView tag, BallTarget ball) {
         double volts = batteryVoltageSensor != null ? batteryVoltageSensor.getVoltage() : 0.0;
+        long timerRemainingMs = (Config.SERVO_AUTO_TIMER_ENABLED && servoTimerActive && !servoStatePos1)
+                ? Math.max(0, Config.SERVO_TIMER_HOLD_MS - (System.currentTimeMillis() - servoPos2StartMs))
+                : 0;
+
         telemetry.addData("Mode", assistStatus);
         telemetry.addData("Drive", !Config.FIELD_CENTRIC ? "ROBOT-CENTRIC"
                 : (pinpoint == null ? "FIELD-CENTRIC (NO PINPOINT - acting robot-centric)" : "FIELD-CENTRIC"));
@@ -1190,8 +1247,10 @@ public class BASE_Debug extends LinearOpMode {
         telemetry.addData("Alliance / Battery", "%s | %.2f V", lockedRed ? "RED" : "BLUE", volts);
         telemetry.addData("Pose", "X %5.1f | Y %5.1f | H %5.1f°", robotX, robotY, robotHeadingDeg);
         telemetry.addData("Servo", customServo != null
-                ? String.format(Locale.US, "%s | Target %.1f° | Actual %.1f° | Speed %.0f°/s",
-                servoStatePos1 ? "POS 1" : "POS 2", targetServoAngleDeg, currentServoAngleDeg, Config.SERVO_SPEED_DEG_PER_SEC)
+                ? String.format(Locale.US, "%s %s| Target %.1f° | Actual %.1f° | Speed %.0f°/s (Accel %.0f)",
+                servoStatePos1 ? "POS 1" : "POS 2",
+                (timerRemainingMs > 0 ? String.format(Locale.US, "(Timer: %.1fs) ", timerRemainingMs / 1000.0) : ""),
+                targetServoAngleDeg, currentServoAngleDeg, currentServoVelocityDegPerSec, Config.SERVO_RAMP_ACCEL_DEG_SEC2)
                 : "None");
         telemetry.addData("Tag", tag != null
                 ? String.format(Locale.US, "#%d (%d allowed in view) | forward %.1f in, right %.1f in",
