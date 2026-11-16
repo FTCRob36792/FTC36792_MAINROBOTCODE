@@ -41,14 +41,16 @@ import java.util.Locale;
 import java.util.concurrent.TimeUnit;
 
 /**
- * BIOBUZZ TeleOp (Debug Version with Enhanced Limelight AprilTag Localization)
+ * BIOBUZZ TeleOp (Debug Version with Enhanced Limelight AprilTag Localization & Tuneable Servo Control)
  *
  * Controls (Gamepad 1):
  *  - Sticks: field-centric mecanum drive
  *  - Y / Options: re-zero field heading
  *  - A: AprilTag align (Limelight): drives right UNDER the closest tag from Config.ALIGN_TAG_IDS (toggle, sticks cancel it)
  *  - B: drive to the biggest group of yellow balls seen by Webcam 1 (toggle, sticks cancel it)
+ *  - X (during TeleOp): toggle custom servo between Pos 1 and Pos 2
  *  - X (during init): switch RED / BLUE alliance
+ *  - D-Pad Up / Down (TeleOp): set custom servo to Pos 1 / Pos 2
  *  - RB + D-Pad: single-wheel direction test
  *
  * Limelight setup: AprilTag pipeline, family 36h11, tag size 82.5 mm (3.25 in), and the camera position
@@ -68,6 +70,16 @@ public class BASE_Debug extends LinearOpMode {
         public static String LIMELIGHT_NAME = "limelight";
         public static String WEBCAM_NAME = "Webcam 1";
         public static String RGB_LIGHT_NAME = "rgb_light";   // goBILDA RGB Indicator Light (set up as a plain "Servo")
+
+        // ---------- Tuneable Servo Control ----------
+        public static boolean SERVO_ENABLED = true;
+        public static String SERVO_NAME = "servo";             // Hardware config name
+        public static boolean REVERSE_SERVO = false;           // Flip direction
+        public static double SERVO_ANGLE_MIN_DEG = 0.0;       // Minimum mechanical angle (degrees)
+        public static double SERVO_ANGLE_MAX_DEG = 180.0;     // Maximum mechanical angle (degrees)
+        public static double SERVO_ANGLE_POS1_DEG = 0.0;      // Target Position 1 (degrees)
+        public static double SERVO_ANGLE_POS2_DEG = 90.0;     // Target Position 2 (degrees)
+        public static double SERVO_SPEED_DEG_PER_SEC = 180.0; // Speed limit in deg/sec (0 = instant max speed)
 
         // ---------- RGB indicator light color (servo position) ----------
         // Off 0.0 | Red 0.277 | Orange 0.333 | Yellow 0.388 | Sage 0.444 | Green 0.500
@@ -195,12 +207,19 @@ public class BASE_Debug extends LinearOpMode {
     private DcMotor frontLeft, frontRight, backLeft, backRight;
 
     private DcMotor intake;
+    private Servo customServo;
     private GoBildaPinpointDriver pinpoint;
     private Limelight3A limelight;
     private OpenCvWebcam webcam;
     private VoltageSensor batteryVoltageSensor;
     private Servo rgbLight;
     private double lastRgbPosition = -1.0;
+
+    // ---------- Tuneable Servo State ----------
+    private double targetServoAngleDeg = 0.0;
+    private double currentServoAngleDeg = 0.0;
+    private long lastServoUpdateMs = 0;
+    private boolean servoStatePos1 = true;
 
     // ---------- Webcam ball detection ----------
     private final BallPipeline ballPipeline = new BallPipeline();
@@ -211,7 +230,7 @@ public class BASE_Debug extends LinearOpMode {
     // ---------- State ----------
     private boolean autoAlignActive = false;
     private boolean blobApproachActive = false;
-    private boolean previousA = false, previousB = false, previousY = false;
+    private boolean previousA = false, previousB = false, previousY = false, previousX = false;
     private boolean previousOptions = false, previousInitX = false, previousLeftBumper = false;
 
     private double fieldHeadingOffsetDeg = 0.0;
@@ -300,7 +319,6 @@ public class BASE_Debug extends LinearOpMode {
             updateInitIndicatorLight(System.currentTimeMillis() - initLightStartMs);
             if (pinpoint != null) {
                 pinpoint.update();
-                // The way the robot is facing when you press START becomes "forward" for the driver
                 fieldHeadingOffsetDeg = headingDeg();
             }
 
@@ -319,6 +337,7 @@ public class BASE_Debug extends LinearOpMode {
             updateLimelightConfigIfNeeded();
             updateWebcamExposureIfNeeded();
             updateTeleOpIndicatorLight();
+            updateCustomServo(now);
 
             double robotX = 0.0, robotY = 0.0, robotHeadingDeg = 0.0;
             if (pinpoint != null) {
@@ -380,9 +399,8 @@ public class BASE_Debug extends LinearOpMode {
             0.666,  // Indigo
             0.722   // Violet
     };
-    private static final long INIT_LIGHT_COLOR_HOLD_MS = 500;   // time on each color
+    private static final long INIT_LIGHT_COLOR_HOLD_MS = 500;
 
-    /** Applies a light position only when it has changed enough to matter. */
     private void setIndicatorLightPosition(double position) {
         if (rgbLight == null) return;
 
@@ -422,6 +440,14 @@ public class BASE_Debug extends LinearOpMode {
             rgbLight = hardwareMap.get(Servo.class, Config.RGB_LIGHT_NAME);
         } catch (Exception e) {
             rgbLight = null;
+        }
+
+        try {
+            customServo = hardwareMap.get(Servo.class, Config.SERVO_NAME);
+            targetServoAngleDeg = Config.SERVO_ANGLE_POS1_DEG;
+            currentServoAngleDeg = Config.SERVO_ANGLE_POS1_DEG;
+        } catch (Exception e) {
+            customServo = null;
         }
 
         try {
@@ -542,6 +568,42 @@ public class BASE_Debug extends LinearOpMode {
         }
     }
 
+    private void updateCustomServo(long now) {
+        if (customServo == null || !Config.SERVO_ENABLED) return;
+
+        if (lastServoUpdateMs == 0) {
+            lastServoUpdateMs = now;
+            return;
+        }
+
+        double dtSec = (now - lastServoUpdateMs) / 1000.0;
+        lastServoUpdateMs = now;
+
+        if (dtSec <= 0.0) return;
+
+        // If speed limit is 0 or >= 720, move instantly to target angle
+        if (Config.SERVO_SPEED_DEG_PER_SEC <= 0.0 || Config.SERVO_SPEED_DEG_PER_SEC >= 720.0) {
+            currentServoAngleDeg = targetServoAngleDeg;
+        } else {
+            double maxStep = Config.SERVO_SPEED_DEG_PER_SEC * dtSec;
+            double diff = targetServoAngleDeg - currentServoAngleDeg;
+            if (Math.abs(diff) <= maxStep) {
+                currentServoAngleDeg = targetServoAngleDeg;
+            } else {
+                currentServoAngleDeg += Math.signum(diff) * maxStep;
+            }
+        }
+
+        double range = Math.max(0.001, Config.SERVO_ANGLE_MAX_DEG - Config.SERVO_ANGLE_MIN_DEG);
+        double normPos = (currentServoAngleDeg - Config.SERVO_ANGLE_MIN_DEG) / range;
+        normPos = clip(normPos, 0.0, 1.0);
+        if (Config.REVERSE_SERVO) {
+            normPos = 1.0 - normPos;
+        }
+
+        customServo.setPosition(normPos);
+    }
+
     // =====================================================================
     // INPUT
     // =====================================================================
@@ -550,6 +612,7 @@ public class BASE_Debug extends LinearOpMode {
         boolean pressedA = gamepad1.a && !previousA;
         boolean pressedB = gamepad1.b && !previousB;
         boolean pressedY = gamepad1.y && !previousY;
+        boolean pressedX = gamepad1.x && !previousX;
         boolean optionsHeld = gamepad1.options || gamepad1.back;
         boolean pressedOptions = optionsHeld && !previousOptions;
 
@@ -591,6 +654,18 @@ public class BASE_Debug extends LinearOpMode {
             }
         }
 
+        if (pressedX) {
+            servoStatePos1 = !servoStatePos1;
+        }
+
+        // D-Pad Up / Down (when Right Bumper is not held for motor test) toggles custom servo position
+        if (!gamepad1.right_bumper) {
+            if (gamepad1.dpad_up) servoStatePos1 = true;
+            else if (gamepad1.dpad_down) servoStatePos1 = false;
+        }
+
+        targetServoAngleDeg = servoStatePos1 ? Config.SERVO_ANGLE_POS1_DEG : Config.SERVO_ANGLE_POS2_DEG;
+
         if (pressedY || pressedOptions) {
             if (pinpoint != null) fieldHeadingOffsetDeg = headingDeg();
             assistStatus = "HEADING RE-ZEROED";
@@ -608,6 +683,7 @@ public class BASE_Debug extends LinearOpMode {
         previousA = gamepad1.a;
         previousB = gamepad1.b;
         previousY = gamepad1.y;
+        previousX = gamepad1.x;
         previousOptions = optionsHeld;
     }
 
@@ -1093,9 +1169,13 @@ public class BASE_Debug extends LinearOpMode {
                 pinpoint.getPosX(DistanceUnit.INCH), pinpoint.getPosY(DistanceUnit.INCH),
                 headingDeg())
                 : "DISCONNECTED");
+        telemetry.addData("Custom Servo", customServo != null
+                ? String.format(Locale.US, "%s (name: '%s')", Config.SERVO_ENABLED ? "ENABLED" : "DISABLED", Config.SERVO_NAME)
+                : "NOT FOUND (name: '" + Config.SERVO_NAME + "')");
 
         telemetry.addLine("--- CONTROLS ---");
-        telemetry.addLine("[X] Toggle alliance | [A] Align to cell | [B] Go to balls");
+        telemetry.addLine("[X] Toggle Alliance (Init) / Servo Pos (TeleOp)");
+        telemetry.addLine("[A] Align to cell | [B] Go to balls | [D-Pad Up/Down] Servo Pos 1/2");
         telemetry.addLine("[Y / Options] Re-zero heading | [D-Pad Left] Field/Robot-centric | [RB + D-Pad] Wheel test");
         telemetry.update();
     }
@@ -1109,6 +1189,10 @@ public class BASE_Debug extends LinearOpMode {
         telemetry.addData("Heading vs Zero", "%.1f°", normalizeDegrees(robotHeadingDeg - fieldHeadingOffsetDeg));
         telemetry.addData("Alliance / Battery", "%s | %.2f V", lockedRed ? "RED" : "BLUE", volts);
         telemetry.addData("Pose", "X %5.1f | Y %5.1f | H %5.1f°", robotX, robotY, robotHeadingDeg);
+        telemetry.addData("Servo", customServo != null
+                ? String.format(Locale.US, "%s | Target %.1f° | Actual %.1f° | Speed %.0f°/s",
+                servoStatePos1 ? "POS 1" : "POS 2", targetServoAngleDeg, currentServoAngleDeg, Config.SERVO_SPEED_DEG_PER_SEC)
+                : "None");
         telemetry.addData("Tag", tag != null
                 ? String.format(Locale.US, "#%d (%d allowed in view) | forward %.1f in, right %.1f in",
                 tag.tagId, tag.tagCount, tag.forwardIn, tag.rightIn)
