@@ -83,13 +83,13 @@ public class BASE_Debug extends LinearOpMode {
         public static double SERVO_ANGLE_MIN_DEG = 0.0;       // Physical minimum mechanical angle of servo in degrees (maps to 0.0 position)
         public static double SERVO_ANGLE_MAX_DEG = 180.0;     // Physical maximum mechanical angle of servo in degrees (maps to 1.0 position)
         public static double SERVO_ANGLE_POS1_DEG = 0.0;      // Target Position 1 angle in degrees (default rest / retracted position)
-        public static double SERVO_ANGLE_POS2_DEG = 5.0;      // Target Position 2 angle in degrees (default active / extended position)
-        public static double SERVO_SPEED_DEG_PER_SEC = 180.0; // Maximum speed limit in degrees per second (0 = instant hardware max speed)
-        public static double SERVO_RAMP_ACCEL_DEG_SEC2 = 360.0; // Acceleration limit in deg/sec² for smooth speed ramping (0 = instant speed change)
-        public static double SERVO_RAMP_DECEL_DISTANCE_DEG = 15.0; // Distance in degrees to begin decelerating smoothly near target angle (0 = no decel ramp)
+        public static double SERVO_ANGLE_POS2_DEG = 68.0;      // Target Position 2 angle in degrees (default active / extended position)
+        public static double SERVO_SPEED_DEG_PER_SEC = 0.0; // Maximum speed limit in degrees per second (0 = instant hardware max speed)
+        public static double SERVO_RAMP_ACCEL_DEG_SEC2 = 0.0; // Acceleration limit in deg/sec² for smooth speed ramping (0 = instant speed change)
+        public static double SERVO_RAMP_DECEL_DISTANCE_DEG = 0.0; // Distance in degrees to begin decelerating smoothly near target angle (0 = no decel ramp)
 
         // ---------- Tunable Servo Auto-Return Timer ----------
-        public static boolean SERVO_AUTO_TIMER_ENABLED = true; // True = automatically return servo to Position 1 after holding Position 2
+        public static boolean SERVO_AUTO_TIMER_ENABLED = false; // True = automatically return servo to Position 1 after holding Position 2
         public static long SERVO_TIMER_HOLD_MS = 1500;        // Hold duration in milliseconds at Position 2 before auto-returning to Position 1 (0 = disabled)
 
         // ---------- RGB Indicator Light Configuration ----------
@@ -203,7 +203,7 @@ public class BASE_Debug extends LinearOpMode {
         public static boolean SHOOTER_ENABLED = true;          // Enable or disable shooter motor control loop
         public static boolean REVERSE_SHOOTER = false;         // Reverse shooter motor spinning direction
         public static double SHOOTER_TARGET_POWER = 0.80;      // Target motor power when Right Trigger is pressed (0.80 = 80% power)
-        public static long SHOOTER_RAMP_UP_MS = 1000;          // Power ramp-up duration in milliseconds (e.g. 1000ms = 1 second ramp)
+        public static long SHOOTER_RAMP_UP_MS = 0;          // Power ramp-up duration in milliseconds (e.g. 1000ms = 1 second ramp)
     }
 
     // ---------- Hardware Devices ----------
