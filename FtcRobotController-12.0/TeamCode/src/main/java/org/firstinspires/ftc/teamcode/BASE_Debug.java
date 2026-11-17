@@ -228,6 +228,11 @@ public class BASE_Debug extends LinearOpMode {
     private Servo rgbLight;
     private double lastRgbPosition = -1.0;
 
+    // ---------- Motor & Actuator Caching for Bus & Power Efficiency ----------
+    private double lastFL = -999, lastFR = -999, lastBL = -999, lastBR = -999;
+    private double lastCustomServoPos = -999;
+    private double lastIntakePower = -999;
+
     // ---------- Tuneable Servo State & Speed Ramping ----------
     private double targetServoAngleDeg = 0.0;
     private double currentServoAngleDeg = 0.0;
@@ -669,7 +674,11 @@ public class BASE_Debug extends LinearOpMode {
             normPos = 1.0 - normPos;
         }
 
-        customServo.setPosition(normPos);
+        // Caching: Only call hardware setPosition if position changed to save bus traffic & power
+        if (Math.abs(normPos - lastCustomServoPos) >= 0.0005) {
+            customServo.setPosition(normPos);
+            lastCustomServoPos = normPos;
+        }
     }
 
     // =====================================================================
@@ -743,7 +752,8 @@ public class BASE_Debug extends LinearOpMode {
         if (pressedY || pressedOptions) {
             if (pinpoint != null) fieldHeadingOffsetDeg = headingDeg();
             assistStatus = "HEADING RE-ZEROED";
-        } else if (!gamepad1.y && !optionsHeld && assistStatus.equals("HEADING RE-ZEROED")) {
+            statusHoldUntilMs = now + 1500;
+        } else if (!gamepad1.y && !optionsHeld && assistStatus.equals("HEADING RE-ZEROED") && now >= statusHoldUntilMs) {
             assistStatus = "READY";
         }
 
@@ -840,6 +850,9 @@ public class BASE_Debug extends LinearOpMode {
         setMotorPowersDirect(fl, fr, bl, br);
     }
 
+    /**
+     * Motor power output with power caching threshold to eliminate redundant bus commands and save battery.
+     */
     private void setMotorPowersDirect(double fl, double fr, double bl, double br) {
         if (Config.REVERSE_FRONT_LEFT) fl = -fl;
         if (Config.REVERSE_FRONT_RIGHT) fr = -fr;
@@ -849,56 +862,75 @@ public class BASE_Debug extends LinearOpMode {
         double max = Math.max(1.0, Math.max(Math.abs(fl), Math.abs(fr)));
         max = Math.max(max, Math.max(Math.abs(bl), Math.abs(br)));
 
-        if (frontLeft != null) frontLeft.setPower(fl / max);
-        if (frontRight != null) frontRight.setPower(fr / max);
-        if (backLeft != null) backLeft.setPower(bl / max);
-        if (backRight != null) backRight.setPower(br / max);
+        double targetFL = fl / max;
+        double targetFR = fr / max;
+        double targetBL = bl / max;
+        double targetBR = br / max;
+
+        if (Math.abs(targetFL - lastFL) >= 0.001) {
+            if (frontLeft != null) frontLeft.setPower(targetFL);
+            lastFL = targetFL;
+        }
+        if (Math.abs(targetFR - lastFR) >= 0.001) {
+            if (frontRight != null) frontRight.setPower(targetFR);
+            lastFR = targetFR;
+        }
+        if (Math.abs(targetBL - lastBL) >= 0.001) {
+            if (backLeft != null) backLeft.setPower(targetBL);
+            lastBL = targetBL;
+        }
+        if (Math.abs(targetBR - lastBR) >= 0.001) {
+            if (backRight != null) backRight.setPower(targetBR);
+            lastBR = targetBR;
+        }
     }
 
     private void runIntake() {
         if (intake == null) return;
+        double targetPower = 0.0;
         if (gamepad1.left_bumper) {
-            intake.setPower(-Config.INTAKE_OUT_POWER);
+            targetPower = -Config.INTAKE_OUT_POWER;
         } else if (gamepad1.left_trigger > Config.TRIGGER_THRESHOLD) {
-            intake.setPower(Config.INTAKE_IN_POWER);
-        } else {
-            intake.setPower(0.0);
+            targetPower = Config.INTAKE_IN_POWER;
+        }
+        if (Math.abs(targetPower - lastIntakePower) >= 0.001) {
+            intake.setPower(targetPower);
+            lastIntakePower = targetPower;
         }
     }
 
     private void runShooter(long now) {
         if (shooter == null || !Config.SHOOTER_ENABLED) return;
+        double targetPower = 0.0;
         if (gamepad1.right_trigger > Config.TRIGGER_THRESHOLD) {
             if (shooterRampStartMs == 0) {
                 shooterRampStartMs = now;
             }
 
-            // Calculate target shooter power: auto-adjust by Limelight distance if enabled & target present
-            double targetPower = Config.SHOOTER_TARGET_POWER;
+            double fullTargetPower = Config.SHOOTER_TARGET_POWER;
             if (Config.SHOOTER_AUTO_SPEED_ENABLED && latestTargetDistanceIn > 0.0) {
-                double range = Math.max(1.0, Config.SHOOTER_FAR_DIST_IN - Config.SHOOTER_CLOSE_DIST_IN);
+                double range = Math.max(0.1, Math.abs(Config.SHOOTER_FAR_DIST_IN - Config.SHOOTER_CLOSE_DIST_IN));
                 double t = (latestTargetDistanceIn - Config.SHOOTER_CLOSE_DIST_IN) / range;
                 double autoPower = Config.SHOOTER_CLOSE_POWER + t * (Config.SHOOTER_FAR_POWER - Config.SHOOTER_CLOSE_POWER);
-                targetPower = clip(autoPower, Config.SHOOTER_MIN_POWER, Config.SHOOTER_MAX_POWER);
+                fullTargetPower = clip(autoPower, Config.SHOOTER_MIN_POWER, Config.SHOOTER_MAX_POWER);
             }
 
             double rampFrac = Config.SHOOTER_RAMP_UP_MS > 0
                     ? clip((double) (now - shooterRampStartMs) / Config.SHOOTER_RAMP_UP_MS, 0.0, 1.0)
                     : 1.0;
-            currentShooterPower = targetPower * rampFrac;
-            shooter.setPower(currentShooterPower);
+            targetPower = fullTargetPower * rampFrac;
         } else {
             shooterRampStartMs = 0;
-            currentShooterPower = 0.0;
-            shooter.setPower(0.0);
+        }
+
+        if (Math.abs(targetPower - currentShooterPower) >= 0.001 || (targetPower == 0.0 && currentShooterPower != 0.0)) {
+            currentShooterPower = targetPower;
+            shooter.setPower(currentShooterPower);
         }
     }
 
     private void stopDrive() {
-        if (frontLeft != null) frontLeft.setPower(0.0);
-        if (frontRight != null) frontRight.setPower(0.0);
-        if (backLeft != null) backLeft.setPower(0.0);
-        if (backRight != null) backRight.setPower(0.0);
+        setMotorPowersDirect(0.0, 0.0, 0.0, 0.0);
     }
 
     // =====================================================================
@@ -1102,8 +1134,9 @@ public class BASE_Debug extends LinearOpMode {
         if (pinpoint != null) {
             strafeVelIPS = pinpoint.getVelY(DistanceUnit.INCH);
         } else if (Config.LEAD_AIM_USE_STICK_ESTIMATE) {
-            // Fallback velocity estimate based on joystick input (-left_stick_x is strafe right)
-            strafeVelIPS = gamepad1.left_stick_x * Config.LEAD_AIM_STICK_MAX_IPS;
+            // Fallback velocity estimate based on joystick input (respecting REVERSE_STRAFE_STICK polarity)
+            double rawStickX = Config.REVERSE_STRAFE_STICK ? -gamepad1.left_stick_x : gamepad1.left_stick_x;
+            strafeVelIPS = rawStickX * Config.LEAD_AIM_STICK_MAX_IPS;
         }
 
         // Calculate dynamic lead/follow angle offset in degrees based on strafe velocity
@@ -1225,8 +1258,10 @@ public class BASE_Debug extends LinearOpMode {
 
     private void updateInitTelemetry() {
         double volts = batteryVoltageSensor != null ? batteryVoltageSensor.getVoltage() : 0.0;
+        String voltStatus = volts < 11.5 ? "(CRITICAL LOW BATTERY!)" : (volts < 12.0 ? "(LOW BATTERY)" : "(GOOD)");
+
         telemetry.addLine("=== BIOBUZZ TELEOP (DEBUG) ===");
-        telemetry.addData("Battery", "%.2f V %s", volts, volts < 12.0 ? "(LOW!)" : "(GOOD)");
+        telemetry.addData("Battery Voltage", "%.2f V %s", volts, voltStatus);
         telemetry.addData("Alliance", Config.RED_ALLIANCE ? "RED (cell tags 30-37)" : "BLUE (cell tags 38-45)");
         telemetry.addData("Drive mode", Config.FIELD_CENTRIC ? "FIELD-CENTRIC" : "ROBOT-CENTRIC");
         telemetry.addData("Tag Yaw Align (A)", Config.ENABLE_APRILTAG_AUTO_ALIGN ? "ENABLED" : "DISABLED");
@@ -1268,15 +1303,18 @@ public class BASE_Debug extends LinearOpMode {
     private void updateTelemetry(double robotX, double robotY, double robotHeadingDeg,
                                  TagView tag, BallTarget ball) {
         double volts = batteryVoltageSensor != null ? batteryVoltageSensor.getVoltage() : 0.0;
+        String voltStatus = volts < 11.5 ? "(CRITICAL LOW BATTERY!)" : (volts < 12.0 ? "(LOW BATTERY)" : "");
+
         long timerRemainingMs = (Config.SERVO_AUTO_TIMER_ENABLED && servoTimerActive && !servoStatePos1)
                 ? Math.max(0, Config.SERVO_TIMER_HOLD_MS - (System.currentTimeMillis() - servoPos2StartMs))
                 : 0;
 
         telemetry.addData("Mode", assistStatus);
+        telemetry.addData("Battery", "%.2f V %s", volts, voltStatus);
         telemetry.addData("Drive", !Config.FIELD_CENTRIC ? "ROBOT-CENTRIC"
                 : (pinpoint == null ? "FIELD-CENTRIC (NO PINPOINT - acting robot-centric)" : "FIELD-CENTRIC"));
         telemetry.addData("Heading vs Zero", "%.1f°", normalizeDegrees(robotHeadingDeg - fieldHeadingOffsetDeg));
-        telemetry.addData("Alliance / Battery", "%s | %.2f V", lockedRed ? "RED" : "BLUE", volts);
+        telemetry.addData("Alliance", "%s", lockedRed ? "RED" : "BLUE");
         telemetry.addData("Pose", "X %5.1f | Y %5.1f | H %5.1f°", robotX, robotY, robotHeadingDeg);
         telemetry.addData("Lead Aiming", Config.LEAD_AIM_ENABLED
                 ? String.format(Locale.US, "ENABLED | Gain: %+.2f deg/(in/s) | Max: %.1f° | Dz: %.1f in/s",
@@ -1363,6 +1401,12 @@ public class BASE_Debug extends LinearOpMode {
         private final Scalar COLOR_BLUE = new Scalar(255, 0, 0);
         private final Scalar COLOR_WHITE = new Scalar(255);
 
+        // Pre-allocated Point instances for zero-allocation OpenCV overlay drawing
+        private final Point ptRect1 = new Point();
+        private final Point ptRect2 = new Point();
+        private final Point ptCircle = new Point();
+        private final Point ptText = new Point();
+
         private final Mat small = new Mat(), blurred = new Mat(), rgb = new Mat(), hsv = new Mat();
         private final Mat mask = new Mat(), dist = new Mat(), hierarchy = new Mat(), noHierarchy = new Mat();
         private final Mat maskUp = new Mat();
@@ -1400,8 +1444,10 @@ public class BASE_Debug extends LinearOpMode {
                         try {
                             roiDist = dist.submat(rect);
                             roiMask = Mat.zeros(rect.size(), CvType.CV_8UC1);
+                            ptRect1.x = -rect.x;
+                            ptRect1.y = -rect.y;
                             Imgproc.drawContours(roiMask, Collections.singletonList(contour), 0, COLOR_WHITE, -1,
-                                    Imgproc.LINE_8, noHierarchy, 0, new Point(-rect.x, -rect.y));
+                                    Imgproc.LINE_8, noHierarchy, 0, ptRect1);
                             Core.MinMaxLocResult mm = Core.minMaxLoc(roiDist, roiMask);
 
                             double radius = Math.max(1.5, mm.maxVal);
@@ -1487,15 +1533,19 @@ public class BASE_Debug extends LinearOpMode {
                 for (int i = 0; i < m; i++) {
                     BallBlob b = blobs.get(i);
                     boolean inBest = findRoot(parent, i) == best;
-                    Imgproc.rectangle(input,
-                            new Point(b.left / scale, b.top / scale),
-                            new Point(b.right / scale, b.bottom / scale),
-                            inBest ? COLOR_GREEN : COLOR_YELLOW, 2);
+                    ptRect1.x = b.left / scale;
+                    ptRect1.y = b.top / scale;
+                    ptRect2.x = b.right / scale;
+                    ptRect2.y = b.bottom / scale;
+                    Imgproc.rectangle(input, ptRect1, ptRect2, inBest ? COLOR_GREEN : COLOR_YELLOW, 2);
                 }
-                Imgproc.circle(input, new Point(centerX / scale, (bottom[best] - 10) / scale),
-                        10, COLOR_BLUE, 3);
-                Imgproc.putText(input, String.valueOf(groupCount[best]),
-                        new Point(centerX / scale + 14, (bottom[best] - 10) / scale),
+                ptCircle.x = centerX / scale;
+                ptCircle.y = (bottom[best] - 10) / scale;
+                Imgproc.circle(input, ptCircle, 10, COLOR_BLUE, 3);
+
+                ptText.x = centerX / scale + 14;
+                ptText.y = (bottom[best] - 10) / scale;
+                Imgproc.putText(input, String.valueOf(groupCount[best]), ptText,
                         Imgproc.FONT_HERSHEY_SIMPLEX, 0.9, COLOR_BLUE, 2);
             } catch (Exception e) {
                 latestBalls = null;
