@@ -41,12 +41,12 @@ import java.util.Locale;
 import java.util.concurrent.TimeUnit;
 
 /**
- * BIOBUZZ TeleOp (Debug Version with Yaw-Only Limelight Alignment & Distance Auto-Shooter Speed)
+ * BIOBUZZ TeleOp (Debug Version with Yaw-Only Limelight Alignment, Velocity Lead Aiming & Distance Auto-Shooter Speed)
  *
  * Controls (Gamepad 1):
  *  - Sticks: field-centric mecanum drive
  *  - Y / Options: re-zero field heading
- *  - A: AprilTag align (Limelight): aligns YAW axis to the closest untipped cell tag of current alliance
+ *  - A: AprilTag align (Limelight): aligns YAW axis to closest untipped cell tag of active alliance (with optional Velocity Lead Aiming)
  *  - B: drive to the biggest group of yellow balls seen by Webcam 1 (toggle, sticks cancel it)
  *  - LT: Intake IN (pulls items in at INTAKE_IN_POWER)
  *  - LB: Intake OUT (ejects items out at INTAKE_OUT_POWER)
@@ -154,6 +154,14 @@ public class BASE_Debug extends LinearOpMode {
         public static double ALIGN_YAW_TOLERANCE_DEG = 1.0;   // Horizontal yaw alignment complete tolerance in degrees
         public static double ALIGN_MAX_TURN = 0.35;           // Maximum turn power limit during yaw alignment
         public static long ALIGN_TIMEOUT_MS = 6000;           // Maximum alignment duration in milliseconds
+
+        // ---------- Velocity Lead / Follow Aiming Parameters (Shooting on the Move) ----------
+        public static boolean LEAD_AIM_ENABLED = true;          // Master toggle to enable/disable velocity lead/follow aiming compensation
+        public static double LEAD_AIM_GAIN_DEG_PER_IPS = 0.5;   // Lead angle gain in degrees per inch/sec of robot strafe velocity (positive = lead in motion direction, negative = follow)
+        public static double LEAD_AIM_MAX_OFFSET_DEG = 15.0;    // Hard maximum limit on lead/follow angle offset in degrees
+        public static double LEAD_AIM_VELOCITY_DEADZONE_IPS = 1.0; // Minimum robot velocity threshold in inches/sec required to activate lead compensation
+        public static boolean LEAD_AIM_USE_STICK_ESTIMATE = true;// Fallback to joystick input velocity estimate if Pinpoint odometry is disconnected
+        public static double LEAD_AIM_STICK_MAX_IPS = 40.0;     // Estimated max robot strafe velocity in inches/sec when using joystick fallback
 
         // ---------- Auto Shooter Speed Adjustment via Target Distance ----------
         public static boolean SHOOTER_AUTO_SPEED_ENABLED = true; // Auto-adjust shooter power based on Limelight target distance
@@ -1065,7 +1073,9 @@ public class BASE_Debug extends LinearOpMode {
     }
 
     /**
-     * Yaw-Only Limelight Alignment: Turns the robot to face the target tag on the yaw axis.
+     * Yaw-Only Limelight Alignment with Velocity Lead Aiming:
+     * Turns the robot to face the target tag on the yaw axis, automatically adding a lead/follow angle
+     * offset based on the robot's strafe velocity when shooting on the move.
      * Forward and strafe drive remain 0.0 so driver retains translation control or robot stays in place.
      */
     private void runAprilTagAlign(TagView tag, long now) {
@@ -1086,22 +1096,42 @@ public class BASE_Debug extends LinearOpMode {
         }
 
         alignTagSeen = true;
-        double yawErrDeg = tag.yawErrorDeg;
 
-        if (Math.abs(yawErrDeg) <= Config.ALIGN_YAW_TOLERANCE_DEG) {
+        // Calculate robot strafe velocity in inches per second (from Pinpoint odometry or joystick fallback)
+        double strafeVelIPS = 0.0;
+        if (pinpoint != null) {
+            strafeVelIPS = pinpoint.getVelY(DistanceUnit.INCH);
+        } else if (Config.LEAD_AIM_USE_STICK_ESTIMATE) {
+            // Fallback velocity estimate based on joystick input (-left_stick_x is strafe right)
+            strafeVelIPS = gamepad1.left_stick_x * Config.LEAD_AIM_STICK_MAX_IPS;
+        }
+
+        // Calculate dynamic lead/follow angle offset in degrees based on strafe velocity
+        double leadOffsetDeg = 0.0;
+        if (Config.LEAD_AIM_ENABLED && Math.abs(strafeVelIPS) >= Config.LEAD_AIM_VELOCITY_DEADZONE_IPS) {
+            leadOffsetDeg = strafeVelIPS * Config.LEAD_AIM_GAIN_DEG_PER_IPS;
+            leadOffsetDeg = clip(leadOffsetDeg, -Config.LEAD_AIM_MAX_OFFSET_DEG, Config.LEAD_AIM_MAX_OFFSET_DEG);
+        }
+
+        // Target error angle on yaw axis including velocity lead/follow offset
+        double effectiveYawErrDeg = tag.yawErrorDeg - leadOffsetDeg;
+
+        if (Math.abs(effectiveYawErrDeg) <= Config.ALIGN_YAW_TOLERANCE_DEG) {
             stopDrive();
-            alignDebug = String.format(Locale.US, "YAW ALIGNED: tx %+.1f° | Dist %.1f in", yawErrDeg, tag.distanceIn);
-            assistStatus = String.format(Locale.US, "ALIGNED TO TAG #%d (dist %.1f in)", tag.tagId, tag.distanceIn);
+            alignDebug = String.format(Locale.US, "YAW ALIGNED: tx %+.1f° | Lead %+.1f° (Vel %.1f in/s) | Dist %.1f in",
+                    tag.yawErrorDeg, leadOffsetDeg, strafeVelIPS, tag.distanceIn);
+            assistStatus = String.format(Locale.US, "ALIGNED TO TAG #%d (Lead %+.1f°)", tag.tagId, leadOffsetDeg);
             return;
         }
 
-        // Proportional turn power on yaw axis to center crosshair on tag (tx = 0)
-        double turn = clip(-yawErrDeg * Config.ALIGN_YAW_KP, -Config.ALIGN_MAX_TURN, Config.ALIGN_MAX_TURN);
+        // Proportional turn power on yaw axis to center crosshair on lead angle target
+        double turn = clip(-effectiveYawErrDeg * Config.ALIGN_YAW_KP, -Config.ALIGN_MAX_TURN, Config.ALIGN_MAX_TURN);
 
         // Turn only (0.0 forward, 0.0 strafe)
         setRobotDrive(0.0, 0.0, turn);
-        alignDebug = String.format(Locale.US, "YAW ALIGN: tx %+.1f° | turn cmd %+.2f | Dist %.1f in", yawErrDeg, turn, tag.distanceIn);
-        assistStatus = String.format(Locale.US, "YAW ALIGNING TAG #%d: tx %+.1f°", tag.tagId, yawErrDeg);
+        alignDebug = String.format(Locale.US, "YAW ALIGN: tx %+.1f° | Lead %+.1f° (Vel %.1f in/s) | Turn %+.2f",
+                tag.yawErrorDeg, leadOffsetDeg, strafeVelIPS, turn);
+        assistStatus = String.format(Locale.US, "YAW ALIGNING TAG #%d (Lead %+.1f°)", tag.tagId, leadOffsetDeg);
     }
 
     // =====================================================================
@@ -1248,6 +1278,10 @@ public class BASE_Debug extends LinearOpMode {
         telemetry.addData("Heading vs Zero", "%.1f°", normalizeDegrees(robotHeadingDeg - fieldHeadingOffsetDeg));
         telemetry.addData("Alliance / Battery", "%s | %.2f V", lockedRed ? "RED" : "BLUE", volts);
         telemetry.addData("Pose", "X %5.1f | Y %5.1f | H %5.1f°", robotX, robotY, robotHeadingDeg);
+        telemetry.addData("Lead Aiming", Config.LEAD_AIM_ENABLED
+                ? String.format(Locale.US, "ENABLED | Gain: %+.2f deg/(in/s) | Max: %.1f° | Dz: %.1f in/s",
+                Config.LEAD_AIM_GAIN_DEG_PER_IPS, Config.LEAD_AIM_MAX_OFFSET_DEG, Config.LEAD_AIM_VELOCITY_DEADZONE_IPS)
+                : "DISABLED");
         telemetry.addData("Shooter", shooter != null
                 ? (currentShooterPower > 0
                 ? String.format(Locale.US, "ON (%.0f%% power %s| target dist: %.1f in)",
