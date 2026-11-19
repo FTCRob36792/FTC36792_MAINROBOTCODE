@@ -59,8 +59,8 @@ import java.util.concurrent.TimeUnit;
  * Limelight setup: AprilTag pipeline, family 36h11, tag size 82.5 mm (3.25 in), and camera position
  * entered on Limelight settings page so tag positions are measured from robot center.
  */
-@TeleOp(name = "BIOBUZZ TeleOp (Debug)", group = "BIOBUZZ")
-public class BASE_Debug extends LinearOpMode {
+@TeleOp(name = "MAIN", group = "MAIN")
+public class Main extends LinearOpMode {
 
     @com.acmerobotics.dashboard.config.Config
     public static class Config {
@@ -89,8 +89,8 @@ public class BASE_Debug extends LinearOpMode {
         public static double SERVO_RAMP_DECEL_DISTANCE_DEG = 0.0; // Distance in degrees to begin decelerating smoothly near target angle (0 = no decel ramp)
 
         // ---------- Tunable Servo Auto-Return Timer ----------
-        public static boolean SERVO_AUTO_TIMER_ENABLED = false;// True = automatically return servo to Position 1 after holding Position 2
-        public static long SERVO_TIMER_HOLD_MS = 1500;        // Hold duration in milliseconds at Position 2 before auto-returning to Position 1 (0 = disabled)
+        public static boolean SERVO_AUTO_TIMER_ENABLED = true;// True = automatically return servo to Position 1 after holding Position 2
+        public static long SERVO_TIMER_HOLD_MS = 5000;        // Hold duration in milliseconds at Position 2 before auto-returning to Position 1 (0 = disabled)
 
         // ---------- RGB Indicator Light Configuration ----------
         // Off 0.0 | Red 0.277 | Orange 0.333 | Yellow 0.388 | Sage 0.444 | Green 0.500 | Azure 0.555 | Blue 0.611 | Indigo 0.666 | Violet 0.722 | White 1.0
@@ -205,14 +205,14 @@ public class BASE_Debug extends LinearOpMode {
 
         // ---------- Intake Motor Settings ----------
         public static boolean REVERSE_INTAKE = false;         // Reverse intake motor spinning direction
-        public static double INTAKE_IN_POWER = 0.5;           // Motor power when pulling items IN (Left Trigger)
-        public static double INTAKE_OUT_POWER = 1.0;          // Motor power when ejecting items OUT (Left Bumper)
+        public static double INTAKE_IN_POWER = 0.8;           // Motor power when pulling items IN (Left Trigger)
+        public static double INTAKE_OUT_POWER = 0.9;          // Motor power when ejecting items OUT (Left Bumper)
         public static double TRIGGER_THRESHOLD = 0.1;         // Trigger threshold to activate intake / shooter
 
         // ---------- Tuneable Shooter Motor Settings & Ramping ----------
         public static boolean SHOOTER_ENABLED = true;          // Enable or disable shooter motor control loop
         public static boolean REVERSE_SHOOTER = false;         // Reverse shooter motor spinning direction
-        public static double SHOOTER_TARGET_POWER = 0.80;      // Default target motor power when Right Trigger is pressed (0.80 = 80% power)
+        public static double SHOOTER_TARGET_POWER = 0.85;      // Default target motor power when Right Trigger is pressed (0.80 = 80% power)
         public static long SHOOTER_RAMP_UP_MS = 0;             // Power ramp-up duration in milliseconds (0 = instant speed)
     }
 
