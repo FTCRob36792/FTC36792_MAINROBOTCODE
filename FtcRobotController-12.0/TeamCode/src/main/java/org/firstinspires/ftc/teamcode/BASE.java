@@ -107,7 +107,7 @@ public class BASE extends LinearOpMode {
         public static int WEBCAM_GAIN = 100;
 
         // ---------- Match setup ----------
-        public static boolean RED_ALLIANCE = true;
+        public static boolean RED_ALLIANCE = false;
         public static boolean ENABLE_APRILTAG_AUTO_ALIGN = true;
         public static boolean ENABLE_BLOB_AUTO_APPROACH = true;
 

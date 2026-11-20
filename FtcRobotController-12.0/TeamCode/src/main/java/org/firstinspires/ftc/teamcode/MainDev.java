@@ -73,14 +73,14 @@ public class MainDev extends LinearOpMode {
         public static boolean REVERSE_SHOOTER = false;         // Reverse shooter motor spinning direction
         public static double SHOOTER_BASE_POWER = 0.85;        // Base shooter motor power before mid-shot bump (85%)
         public static double SHOOTER_BUMP_POWER = 0.95;        // Bumped shooter motor power mid-shot (95%)
-        public static boolean SHOOTER_BUMP_ENABLED = true;     // Enable shooter power bump mid-shot
+        public static boolean SHOOTER_BUMP_ENABLED = false;     // Enable shooter power bump mid-shot
         public static long SHOOTER_BUMP_DELAY_MS = 150;        // Timed delay in ms after servo actuates (Pos 2) before bumping power
         public static long SHOOTER_BUMP_DURATION_MS = 500;     // Duration in ms to hold power bump (0 = hold while servo is extended)
         public static double SHOOTER_TARGET_POWER = 0.85;      // Target motor power fallback / legacy alias
         public static long SHOOTER_RAMP_UP_MS = 0;             // Power ramp-up duration in milliseconds (0 = instant speed)
 
         // ---------- Auto Shooter Distance-Speed Calibration ----------
-        public static boolean SHOOTER_AUTO_SPEED_ENABLED = true; // Auto-adjust shooter power based on Limelight target distance
+        public static boolean SHOOTER_AUTO_SPEED_ENABLED = false; // Auto-adjust shooter power based on Limelight target distance
         public static double SHOOTER_CLOSE_DIST_IN = 36.0;        // Close calibration distance in inches (e.g. 3 feet)
         public static double SHOOTER_CLOSE_POWER = 0.60;          // Shooter motor power at close distance (e.g. 60%)
         public static double SHOOTER_FAR_DIST_IN = 120.0;         // Far calibration distance in inches (e.g. 10 feet)
