@@ -20,11 +20,6 @@ import org.firstinspires.ftc.robotcore.external.navigation.DistanceUnit;
 import org.firstinspires.ftc.robotcore.external.navigation.Pose2D;
 import org.firstinspires.ftc.robotcore.external.navigation.Pose3D;
 import org.firstinspires.ftc.robotcore.external.navigation.Position;
-import org.openftc.easyopencv.OpenCvCamera;
-import org.openftc.easyopencv.OpenCvCameraFactory;
-import org.openftc.easyopencv.OpenCvCameraRotation;
-import org.openftc.easyopencv.OpenCvPipeline;
-import org.openftc.easyopencv.OpenCvWebcam;
 import org.opencv.core.Core;
 import org.opencv.core.CvType;
 import org.opencv.core.Mat;
@@ -33,6 +28,11 @@ import org.opencv.core.Point;
 import org.opencv.core.Rect;
 import org.opencv.core.Scalar;
 import org.opencv.imgproc.Imgproc;
+import org.openftc.easyopencv.OpenCvCamera;
+import org.openftc.easyopencv.OpenCvCameraFactory;
+import org.openftc.easyopencv.OpenCvCameraRotation;
+import org.openftc.easyopencv.OpenCvPipeline;
+import org.openftc.easyopencv.OpenCvWebcam;
 
 import java.util.ArrayList;
 import java.util.Collections;
@@ -41,16 +41,16 @@ import java.util.Locale;
 import java.util.concurrent.TimeUnit;
 
 /**
- * BIOBUZZ TeleOp (Debug Version with Enhanced Limelight AprilTag Localization, Tuneable Servo & Ramped Shooter Motor)
+ * BIOBUZZ TeleOp (Debug Version with Yaw-Only Limelight Alignment, Velocity Lead Aiming & Distance Auto-Shooter Speed)
  *
  * Controls (Gamepad 1):
  *  - Sticks: field-centric mecanum drive
  *  - Y / Options: re-zero field heading
- *  - A: AprilTag align (Limelight): drives right UNDER the closest tag from Config.ALIGN_TAG_IDS (toggle, sticks cancel it)
+ *  - A: AprilTag align (Limelight): aligns YAW axis to closest untipped cell tag of active alliance (with optional Velocity Lead Aiming)
  *  - B: drive to the biggest group of yellow balls seen by Webcam 1 (toggle, sticks cancel it)
  *  - LT: Intake IN (pulls items in at INTAKE_IN_POWER)
  *  - LB: Intake OUT (ejects items out at INTAKE_OUT_POWER)
- *  - RT: Shooter ON (smooth 1-second power ramp-up to SHOOTER_TARGET_POWER, e.g. 80% power)
+ *  - RT: Shooter ON (auto-adjusts speed by Limelight distance if enabled, else SHOOTER_TARGET_POWER)
  *  - X (during TeleOp): toggle custom servo between Pos 1 and Pos 2 (starts auto-return timer if enabled)
  *  - X (during init): switch RED / BLUE alliance
  *  - D-Pad Up / Down (TeleOp): set custom servo to Pos 1 / Pos 2
@@ -59,122 +59,105 @@ import java.util.concurrent.TimeUnit;
  * Limelight setup: AprilTag pipeline, family 36h11, tag size 82.5 mm (3.25 in), and camera position
  * entered on Limelight settings page so tag positions are measured from robot center.
  */
-@TeleOp(name = "BIOBUZZ TeleOp (Debug)", group = "BIOBUZZ")
-public class BASE_Debug extends LinearOpMode {
+@TeleOp(name = "MAIN DEV", group = "MAIN")
+public class MainDev extends LinearOpMode {
 
     @com.acmerobotics.dashboard.config.Config
     public static class Config {
-        // ---------- Hardware Names (must match the Robot Configuration in FTC Robot Controller) ----------
-        public static String FRONT_LEFT_NAME = "front_left";   // Hardware configuration name for Front Left drive motor
-        public static String FRONT_RIGHT_NAME = "back_right";  // Hardware configuration name for Front Right drive motor
-        public static String BACK_LEFT_NAME = "back_left";     // Hardware configuration name for Back Left drive motor
-        public static String BACK_RIGHT_NAME = "front_right";  // Hardware configuration name for Back Right drive motor
-        public static String PINPOINT_NAME = "pinpoint";       // Hardware configuration name for goBILDA Pinpoint Odometry Computer
-        public static String LIMELIGHT_NAME = "limelight";     // Hardware configuration name for Limelight 3A vision sensor
-        public static String WEBCAM_NAME = "Webcam 1";         // Hardware configuration name for Logitech/OpenCV USB Webcam
-        public static String RGB_LIGHT_NAME = "rgb_light";     // Hardware configuration name for goBILDA RGB Indicator Light (Servo)
-        public static String INTAKE_NAME = "intake";           // Hardware configuration name for Intake motor
-        public static String SHOOTER_NAME = "shooter";         // Hardware configuration name for Shooter motor
-        public static String SERVO_NAME = "servo";             // Hardware configuration name for tuneable custom Servo
+        // =====================================================================
+        // 1. SHOOTER & FEEDER SUBSYSTEM (MOST FREQUENTLY TUNED)
+        // =====================================================================
 
-        // ---------- Tuneable Servo Control & Speed Ramping ----------
+        // ---------- Shooter Motor Speeds & Mid-Shot Power Bump ----------
+        public static boolean SHOOTER_ENABLED = true;          // Enable or disable shooter motor control loop
+        public static boolean REVERSE_SHOOTER = false;         // Reverse shooter motor spinning direction
+        public static double SHOOTER_BASE_POWER = 0.85;        // Base shooter motor power before mid-shot bump (85%)
+        public static double SHOOTER_BUMP_POWER = 0.95;        // Bumped shooter motor power mid-shot (95%)
+        public static boolean SHOOTER_BUMP_ENABLED = true;     // Enable shooter power bump mid-shot
+        public static long SHOOTER_BUMP_DELAY_MS = 150;        // Timed delay in ms after servo actuates (Pos 2) before bumping power
+        public static long SHOOTER_BUMP_DURATION_MS = 500;     // Duration in ms to hold power bump (0 = hold while servo is extended)
+        public static double SHOOTER_TARGET_POWER = 0.85;      // Target motor power fallback / legacy alias
+        public static long SHOOTER_RAMP_UP_MS = 0;             // Power ramp-up duration in milliseconds (0 = instant speed)
+
+        // ---------- Auto Shooter Distance-Speed Calibration ----------
+        public static boolean SHOOTER_AUTO_SPEED_ENABLED = true; // Auto-adjust shooter power based on Limelight target distance
+        public static double SHOOTER_CLOSE_DIST_IN = 36.0;        // Close calibration distance in inches (e.g. 3 feet)
+        public static double SHOOTER_CLOSE_POWER = 0.60;          // Shooter motor power at close distance (e.g. 60%)
+        public static double SHOOTER_FAR_DIST_IN = 120.0;         // Far calibration distance in inches (e.g. 10 feet)
+        public static double SHOOTER_FAR_POWER = 1.00;            // Shooter motor power at far distance (e.g. 100%)
+        public static double SHOOTER_MIN_POWER = 0.40;            // Minimum clamped shooter power limit
+        public static double SHOOTER_MAX_POWER = 1.00;            // Maximum clamped shooter power limit
+
+        // ---------- Shooter Battery Voltage Compensation ----------
+        public static boolean SHOOTER_VOLTAGE_COMP_ENABLED = false; // Automatic voltage compensation to maintain constant RPM under voltage sags
+        public static double NOMINAL_BATTERY_VOLTAGE = 12.0;       // Target nominal battery voltage (volts)
+
+        // ---------- Shooter Feeder Servo Control & Ramping ----------
         public static boolean SERVO_ENABLED = true;            // Enable or disable custom servo control loop
         public static boolean REVERSE_SERVO = false;           // Reverse physical servo rotation direction
+        public static double SERVO_ANGLE_POS1_DEG = 0.0;      // Target Position 1 angle in degrees (default rest / retracted position)
+        public static double SERVO_ANGLE_POS2_DEG = 90.0;     // Target Position 2 angle in degrees (default active / extended position)
         public static double SERVO_ANGLE_MIN_DEG = 0.0;       // Physical minimum mechanical angle of servo in degrees (maps to 0.0 position)
         public static double SERVO_ANGLE_MAX_DEG = 180.0;     // Physical maximum mechanical angle of servo in degrees (maps to 1.0 position)
-        public static double SERVO_ANGLE_POS1_DEG = 0.0;      // Target Position 1 angle in degrees (default rest / retracted position)
-        public static double SERVO_ANGLE_POS2_DEG = 68.0;      // Target Position 2 angle in degrees (default active / extended position)
-        public static double SERVO_SPEED_DEG_PER_SEC = 0.0; // Maximum speed limit in degrees per second (0 = instant hardware max speed)
-        public static double SERVO_RAMP_ACCEL_DEG_SEC2 = 0.0; // Acceleration limit in deg/sec² for smooth speed ramping (0 = instant speed change)
+        public static double SERVO_SPEED_DEG_PER_SEC = 0.0;   // Maximum speed limit in degrees per second (0 = instant hardware max speed)
+        public static double SERVO_RAMP_ACCEL_DEG_SEC2 = 0.0;  // Acceleration limit in deg/sec² for smooth speed ramping (0 = instant speed change)
         public static double SERVO_RAMP_DECEL_DISTANCE_DEG = 0.0; // Distance in degrees to begin decelerating smoothly near target angle (0 = no decel ramp)
+        public static boolean SERVO_AUTO_TIMER_ENABLED = true;// True = automatically return servo to Position 1 after holding Position 2
+        public static long SERVO_TIMER_HOLD_MS = 5000;        // Hold duration in milliseconds at Position 2 before auto-returning to Position 1 (0 = disabled)
 
-        // ---------- Tunable Servo Auto-Return Timer ----------
-        public static boolean SERVO_AUTO_TIMER_ENABLED = false; // True = automatically return servo to Position 1 after holding Position 2
-        public static long SERVO_TIMER_HOLD_MS = 1500;        // Hold duration in milliseconds at Position 2 before auto-returning to Position 1 (0 = disabled)
+        // =====================================================================
+        // 2. INTAKE SUBSYSTEM
+        // =====================================================================
+        public static boolean REVERSE_INTAKE = false;         // Reverse intake motor spinning direction
+        public static double INTAKE_IN_POWER = 0.8;           // Motor power when pulling items IN (Left Trigger)
+        public static double INTAKE_OUT_POWER = 0.9;          // Motor power when ejecting items OUT (Left Bumper)
+        public static double TRIGGER_THRESHOLD = 0.1;         // Trigger threshold to activate intake / shooter
 
-        // ---------- RGB Indicator Light Configuration ----------
-        // Off 0.0 | Red 0.277 | Orange 0.333 | Yellow 0.388 | Sage 0.444 | Green 0.500 | Azure 0.555 | Blue 0.611 | Indigo 0.666 | Violet 0.722 | White 1.0
-        public static double RGB_LIGHT_POSITION = 0.555;      // Preset servo position for electric blue indicator color (#4BB4CB)
-
-        // ---------- Motor Rotation Reversals ----------
-        public static boolean REVERSE_FRONT_LEFT = true;       // Flip rotation direction of Front Left drive motor
-        public static boolean REVERSE_FRONT_RIGHT = false;     // Flip rotation direction of Front Right drive motor
-        public static boolean REVERSE_BACK_LEFT = true;        // Flip rotation direction of Back Left drive motor
-        public static boolean REVERSE_BACK_RIGHT = false;      // Flip rotation direction of Back Right drive motor
-
-        // ---------- Drive Direction Overrides ----------
-        public static boolean INVERT_FORWARD = false;          // True = opposite end of robot is front (flips forward & strafe commands together)
-        public static boolean REVERSE_DRIVE_FORWARD = false;   // Flip forward / backward driving commands
-        public static boolean REVERSE_DRIVE_TURN = false;      // Flip clockwise / counter-clockwise turning commands
-
-        // ---------- Field-Centric ("Swerve Style") Driving ----------
-        public static boolean FIELD_CENTRIC = true;          // True = swerve style (stick direction relative to field), False = robot-centric
-        public static boolean REVERSE_HEADING = false;       // Flip heading direction if field drive moves wrong way after turning
-        public static boolean REVERSE_STRAFE_STICK = false;  // Flip left stick X direction if strafing is backwards
-
-        // ---------- Pinpoint Odometry Calibration ----------
-        public static double PINPOINT_X_POD_OFFSET_MM = 0.0; // X pod offset from robot center in millimeters
-        public static double PINPOINT_Y_POD_OFFSET_MM = 0.0; // Y pod offset from robot center in millimeters
-        public static boolean REVERSE_X_ENCODER = false;       // Reverse X pod encoder counting direction
-        public static boolean REVERSE_Y_ENCODER = false;       // Reverse Y pod encoder counting direction
-
-        // ---------- Webcam Exposure & Gain Settings ----------
-        public static boolean WEBCAM_MANUAL_EXPOSURE = false;  // True = enable manual camera exposure/gain controls, False = auto exposure
-        public static long WEBCAM_EXPOSURE_MS = 15;            // Camera exposure time in milliseconds (when manual exposure is enabled)
-        public static int WEBCAM_GAIN = 100;                   // Camera gain level (when manual exposure is enabled)
-
-        // ---------- Match & Autonomous Setup ----------
-        public static boolean RED_ALLIANCE = true;             // Default alliance selection (True = RED, False = BLUE)
-        public static boolean ENABLE_APRILTAG_AUTO_ALIGN = true;// Safety lock for Gamepad 1 [A] AprilTag auto-align feature
-        public static boolean ENABLE_BLOB_AUTO_APPROACH = true;// Safety lock for Gamepad 1 [B] Yellow ball approach feature
-
-        // ---------- Initial Robot Field Pose ----------
-        public static double START_X_IN = 0.0;                 // Initial X coordinate in inches for Pinpoint pose reset
-        public static double START_Y_IN = 0.0;                 // Initial Y coordinate in inches for Pinpoint pose reset
-        public static double START_HEADING_DEG = 0.0;          // Initial heading in degrees for Pinpoint pose reset
-
-        // ---------- Driver Joystick Deadzone ----------
-        public static double STICK_DEADZONE = 0.16;             // Joystick deadzone threshold (stick inputs below this absolute value are ignored)
-
-        // ---------- AprilTag Alignment Parameters (Limelight 3A) ----------
+        // =====================================================================
+        // 3. VISION & AUTO-AIM SUBSYSTEM (LIMELIGHT 3A & APRILTAGS)
+        // =====================================================================
+        public static boolean ENABLE_APRILTAG_AUTO_ALIGN = true;// Master lock for Gamepad 1 [A] AprilTag auto-align feature
         public static int APRILTAG_PIPELINE = 0;              // Limelight pipeline index configured for AprilTag detection
         public static String RED_ALIGN_TAG_IDS = "31,35";     // Comma-separated list of allowed AprilTag IDs on RED alliance
         public static String BLUE_ALIGN_TAG_IDS = "39,43";    // Comma-separated list of allowed AprilTag IDs on BLUE alliance
+        public static double ALIGN_YAW_KP = 0.015;            // Proportional turn power gain per degree of horizontal yaw offset (tx)
+        public static double ALIGN_YAW_TOLERANCE_DEG = 1.0;   // Horizontal yaw alignment complete tolerance in degrees
+        public static double ALIGN_MAX_TURN = 0.35;           // Maximum turn power limit during yaw alignment
+        public static long ALIGN_TIMEOUT_MS = 6000;           // Maximum alignment duration in milliseconds
 
+        // ---------- Velocity Lead / Follow Aiming (Shooting on the Move) ----------
+        public static boolean LEAD_AIM_ENABLED = true;          // Master toggle to enable/disable velocity lead/follow aiming compensation
+        public static double LEAD_AIM_GAIN_DEG_PER_IPS = 0.5;   // Lead angle gain in degrees per inch/sec of robot strafe velocity (positive = lead, negative = follow)
+        public static double LEAD_AIM_MAX_OFFSET_DEG = 15.0;    // Hard maximum limit on lead/follow angle offset in degrees
+        public static double LEAD_AIM_VELOCITY_DEADZONE_IPS = 1.0; // Minimum robot velocity threshold in inches/sec required to activate lead compensation
+        public static boolean LEAD_AIM_USE_STICK_ESTIMATE = true;// Fallback to joystick input velocity estimate if Pinpoint odometry is disconnected
+        public static double LEAD_AIM_STICK_MAX_IPS = 40.0;     // Estimated max robot strafe velocity in inches/sec when using joystick fallback
+
+        // ---------- Advanced Limelight 3D Calibration ----------
+        public static boolean IGNORE_TIPPED_HIVES = true;      // Ignore AprilTags on tipped hives (tilted roll/pitch orientation)
+        public static double TIPPED_HIVE_MAX_ROLL_DEG = 45.0;  // Maximum roll/pitch tilt in degrees before tag is ignored as a tipped hive
         public static boolean USE_ROBOT_SPACE_POSE = true;    // True = getTargetPoseRobotSpace() [X=fwd, Y=right, Z=up], False = getTargetPoseCameraSpace() [X=right, Y=down, Z=fwd]
         public static int TAG_FORWARD_AXIS = 0;               // Axis index for forward motion (0 = X, 1 = Y, 2 = Z)
         public static int TAG_RIGHT_AXIS = 1;                 // Axis index for sideways right motion (0 = X, 1 = Y, 2 = Z)
         public static boolean TAG_FORWARD_NEGATE = false;     // Negate forward target position if axis direction is inverted
         public static boolean TAG_RIGHT_NEGATE = false;       // Negate right target position if axis direction is inverted
 
-        public static double ALIGN_TARGET_FORWARD_IN = 50.0;   // Desired target tag offset forward from robot center in inches
-        public static double ALIGN_TARGET_RIGHT_IN = 40.5;     // Desired target tag offset right from robot center in inches
-        public static boolean BLUE_MIRRORS_SIDE = true;        // True = negate right target offset for BLUE alliance
-        public static double ALIGN_TOLERANCE_IN = 1.5;        // Positional tolerance in inches to consider alignment complete
-
-        public static double ALIGN_KP = 0.04;                 // Proportional gain for alignment drive speed per inch of error
-        public static double ALIGN_MAX_SPEED = 0.50;          // Maximum drive power limit during AprilTag alignment
-        public static double ALIGN_MIN_SPEED = 0.15;          // Minimum drive power threshold to overcome static friction
-        public static boolean ALIGN_HOLD_HEADING = true;      // True = lock robot heading with Pinpoint while sliding under tag
-        public static double ALIGN_HEADING_KP = 0.01;         // Proportional turn power gain per degree of heading error
-        public static double ALIGN_MAX_TURN = 0.15;           // Maximum turn power limit during heading hold
-        public static double ALIGN_BLIND_MAX_IN = 30.0;       // Maximum blind tracking distance in inches via Pinpoint when tag leaves view
-        public static double ALIGN_DIVERGE_IN = 8.0;          // Safety limit: abort alignment if robot moves this much farther from tag
-        public static long ALIGN_TIMEOUT_MS = 6000;           // Maximum alignment duration in milliseconds
-
-        // ---------- Yellow Ball Vision Detection (Logitech Webcam) ----------
+        // =====================================================================
+        // 4. VISION & BALL APPROACH SUBSYSTEM (LOGITECH WEBCAM)
+        // =====================================================================
+        public static boolean ENABLE_BLOB_AUTO_APPROACH = true;// Master lock for Gamepad 1 [B] Yellow ball approach feature
+        public static boolean SHOW_BALL_MASK = false;         // True = display binary vision mask on camera preview for tuning
         public static int HSV_H_MIN = 20;                     // Minimum Hue threshold (0-180) for yellow color detection
         public static int HSV_H_MAX = 38;                     // Maximum Hue threshold (0-180) for yellow color detection
         public static int HSV_S_MIN = 80;                     // Minimum Saturation threshold (0-255) for yellow color detection
         public static int HSV_S_MAX = 255;                    // Maximum Saturation threshold (0-255) for yellow color detection
         public static int HSV_V_MIN = 60;                     // Minimum Value/Brightness threshold (0-255) for yellow color detection
         public static int HSV_V_MAX = 255;                    // Maximum Value/Brightness threshold (0-255) for yellow color detection
-        public static boolean SHOW_BALL_MASK = false;         // True = display binary vision mask on camera preview for tuning
         public static double MIN_BALL_AREA_PX = 40.0;         // Minimum area in pixels for a valid yellow blob
         public static double CLUSTER_DIST_DIAMETERS = 5.0;    // Maximum cluster distance in ball diameters to group nearby blobs
         public static double WEBCAM_HFOV_DEG = 60.0;          // Horizontal field-of-view of webcam in degrees
 
-        // ---------- Yellow Ball Approach Parameters ----------
+        // ---------- Ball Auto-Approach Controls ----------
         public static boolean BALL_CAMERA_ON_BACK = false;    // False = camera is mounted on front, True = camera mounted on back
         public static boolean REVERSE_BALL_STRAFE = false;    // Reverse sideways strafe direction during ball approach
         public static double BALL_STOP_Y_FRACTION = 0.97;     // Stop threshold when ball cluster bottom reaches image height fraction (0 = top, 1 = bottom)
@@ -193,17 +176,64 @@ public class BASE_Debug extends LinearOpMode {
         public static double BALL_BLIND_MIN_Y = 0.85;         // Minimum Y image fraction required to trigger final blind push
         public static long BALL_TIMEOUT_MS = 6000;            // Ball approach timeout in milliseconds
 
-        // ---------- Intake Motor Settings ----------
-        public static boolean REVERSE_INTAKE = false;         // Reverse intake motor spinning direction
-        public static double INTAKE_IN_POWER = 0.5;           // Motor power when pulling items IN (Left Trigger)
-        public static double INTAKE_OUT_POWER = 1.0;          // Motor power when ejecting items OUT (Left Bumper)
-        public static double TRIGGER_THRESHOLD = 0.1;         // Trigger threshold to activate intake / shooter
+        // ---------- Webcam Camera Settings ----------
+        public static boolean WEBCAM_MANUAL_EXPOSURE = false;  // True = enable manual camera exposure/gain controls, False = auto exposure
+        public static long WEBCAM_EXPOSURE_MS = 15;            // Camera exposure time in milliseconds (when manual exposure is enabled)
+        public static int WEBCAM_GAIN = 100;                   // Camera gain level (when manual exposure is enabled)
 
-        // ---------- Tuneable Shooter Motor Settings & Ramping ----------
-        public static boolean SHOOTER_ENABLED = true;          // Enable or disable shooter motor control loop
-        public static boolean REVERSE_SHOOTER = false;         // Reverse shooter motor spinning direction
-        public static double SHOOTER_TARGET_POWER = 0.80;      // Target motor power when Right Trigger is pressed (0.80 = 80% power)
-        public static long SHOOTER_RAMP_UP_MS = 0;          // Power ramp-up duration in milliseconds (e.g. 1000ms = 1 second ramp)
+        // =====================================================================
+        // 5. DRIVETRAIN & FIELD-CENTRIC DRIVING
+        // =====================================================================
+        public static boolean FIELD_CENTRIC = true;          // True = swerve style (stick direction relative to field), False = robot-centric
+        public static double STICK_DEADZONE = 0.16;             // Joystick deadzone threshold (stick inputs below this absolute value are ignored)
+        public static boolean REVERSE_HEADING = false;       // Flip heading direction if field drive moves wrong way after turning
+        public static boolean REVERSE_STRAFE_STICK = false;  // Flip left stick X direction if strafing is backwards
+        public static boolean INVERT_FORWARD = false;          // True = opposite end of robot is front (flips forward & strafe commands together)
+        public static boolean REVERSE_DRIVE_FORWARD = false;   // Flip forward / backward driving commands
+        public static boolean REVERSE_DRIVE_TURN = false;      // Flip clockwise / counter-clockwise turning commands
+        public static boolean REVERSE_FRONT_LEFT = true;       // Flip rotation direction of Front Left drive motor
+        public static boolean REVERSE_FRONT_RIGHT = false;     // Flip rotation direction of Front Right drive motor
+        public static boolean REVERSE_BACK_LEFT = true;        // Flip rotation direction of Back Left drive motor
+        public static boolean REVERSE_BACK_RIGHT = false;      // Flip rotation direction of Back Right drive motor
+
+        // =====================================================================
+        // 6. MATCH SETUP & INITIAL ROBOT POSE
+        // =====================================================================
+        public static boolean RED_ALLIANCE = true;             // Default alliance selection (True = RED, False = BLUE)
+        public static double START_X_IN = 0.0;                 // Initial X coordinate in inches for Pinpoint pose reset
+        public static double START_Y_IN = 0.0;                 // Initial Y coordinate in inches for Pinpoint pose reset
+        public static double START_HEADING_DEG = 0.0;          // Initial heading in degrees for Pinpoint pose reset
+
+        // =====================================================================
+        // 7. PINPOINT ODOMETRY & MISC HARDWARE
+        // =====================================================================
+        public static double PINPOINT_X_POD_OFFSET_MM = 0.0; // X pod offset from robot center in millimeters
+        public static double PINPOINT_Y_POD_OFFSET_MM = 0.0; // Y pod offset from robot center in millimeters
+        public static boolean REVERSE_X_ENCODER = false;       // Reverse X pod encoder counting direction
+        public static boolean REVERSE_Y_ENCODER = false;       // Reverse Y pod encoder counting direction
+        // Off 0.0 | Red 0.277 | Orange 0.333 | Yellow 0.388 | Sage 0.444 | Green 0.500 | Azure 0.555 | Blue 0.611 | Indigo 0.666 | Violet 0.722 | White 1.0
+        public static double RGB_LIGHT_POSITION = 0.555;      // Preset servo position for electric blue indicator color (#4BB4CB)
+        public static long ALLIANCE_SHOW_DURATION_MS = 1500;   // Hold duration in ms to display selected alliance color (Red/Blue) when changed in init
+        public static long INIT_BLINK_INTERVAL_MS = 125;       // Quick blink interval in ms for blue light during init
+        public static long TELEOP_BLINK_INTERVAL_MS = 250;     // Blink interval in ms for blue light during normal TeleOp
+        public static double ALIGN_LIGHT_MAX_ERROR_DEG = 15.0; // Yaw error in degrees corresponding to Red (0% aligned)
+        public static double END_GAME_PARK_WARNING_SEC = 5.0;  // Seconds before end of match (120s total) to trigger park warning light cycle
+        public static long PARK_WARNING_STROBE_MS = 70;        // Strobe color cycle step interval in ms for park alert
+
+        // =====================================================================
+        // 8. HARDWARE CONFIGURATION NAMES (ROBOT CONFIG)
+        // =====================================================================
+        public static String FRONT_LEFT_NAME = "front_left";   // Hardware configuration name for Front Left drive motor
+        public static String FRONT_RIGHT_NAME = "back_right";  // Hardware configuration name for Front Right drive motor
+        public static String BACK_LEFT_NAME = "back_left";     // Hardware configuration name for Back Left drive motor
+        public static String BACK_RIGHT_NAME = "front_right";  // Hardware configuration name for Front Right drive motor
+        public static String PINPOINT_NAME = "pinpoint";       // Hardware configuration name for goBILDA Pinpoint Odometry Computer
+        public static String LIMELIGHT_NAME = "limelight";     // Hardware configuration name for Limelight 3A vision sensor
+        public static String WEBCAM_NAME = "Webcam 1";         // Hardware configuration name for Logitech/OpenCV USB Webcam
+        public static String RGB_LIGHT_NAME = "rgb_light";     // Hardware configuration name for goBILDA RGB Indicator Light (Servo)
+        public static String INTAKE_NAME = "intake";           // Hardware configuration name for Intake motor
+        public static String SHOOTER_NAME = "shooter";         // Hardware configuration name for Shooter motor
+        public static String SERVO_NAME = "servo";             // Hardware configuration name for tuneable custom Servo
     }
 
     // ---------- Hardware Devices ----------
@@ -218,6 +248,11 @@ public class BASE_Debug extends LinearOpMode {
     private Servo rgbLight;
     private double lastRgbPosition = -1.0;
 
+    // ---------- Motor & Actuator Caching for Bus & Power Efficiency ----------
+    private double lastFL = -999, lastFR = -999, lastBL = -999, lastBR = -999;
+    private double lastCustomServoPos = -999;
+    private double lastIntakePower = -999;
+
     // ---------- Tuneable Servo State & Speed Ramping ----------
     private double targetServoAngleDeg = 0.0;
     private double currentServoAngleDeg = 0.0;
@@ -229,9 +264,28 @@ public class BASE_Debug extends LinearOpMode {
     private long servoPos2StartMs = 0;
     private boolean servoTimerActive = false;
 
-    // ---------- Tuneable Shooter Ramping State ----------
+    // ---------- Tuneable Shooter Ramping & Distance State ----------
     private long shooterRampStartMs = 0;
     private double currentShooterPower = 0.0;
+    private double latestTargetDistanceIn = 0.0;
+
+    // ---------- Battery Voltage Throttling ----------
+    private double cachedBatteryVoltage = 12.0;
+    private long lastVoltageReadMs = 0;
+
+    private double getBatteryVoltage(long now) {
+        if (batteryVoltageSensor != null && (now - lastVoltageReadMs > 250 || lastVoltageReadMs == 0)) {
+            try {
+                double v = batteryVoltageSensor.getVoltage();
+                if (v > 1.0) {
+                    cachedBatteryVoltage = v;
+                }
+            } catch (Exception ignored) {
+            }
+            lastVoltageReadMs = now;
+        }
+        return cachedBatteryVoltage;
+    }
 
     // ---------- Webcam Ball Detection ----------
     private final BallPipeline ballPipeline = new BallPipeline();
@@ -258,13 +312,7 @@ public class BASE_Debug extends LinearOpMode {
     private long statusHoldUntilMs = 0;
     private String tagDebug = "";
     private boolean alignTagSeen = false;
-    private int lockedAlignTagId = -1;
-    private double alignHoldHeadingDeg = 0.0;
-    private double alignLastErrF = 0.0, alignLastErrR = 0.0;
-    private double alignTargetFieldX = 0.0, alignTargetFieldY = 0.0;
-    private double alignMinErr = Double.MAX_VALUE;
-    private double alignStartErr = -1.0;
-    private long alignStartMs = 0;
+    private double alignStartMs = 0;
     private boolean ballSeen = false;
     private double ballHoldHeadingDeg = 0.0;
     private double lastBallY = 0.0;
@@ -274,14 +322,12 @@ public class BASE_Debug extends LinearOpMode {
 
     private boolean allianceLocked = false;
     private boolean lockedRed = true;
+    private boolean lastInitRedAlliance = true;
+    private long allianceShowStartMs = 0;
 
     private String activeTagIds() {
         boolean red = allianceLocked ? lockedRed : Config.RED_ALLIANCE;
         return red ? Config.RED_ALIGN_TAG_IDS : Config.BLUE_ALIGN_TAG_IDS;
-    }
-    private double targetRightIn() {
-        boolean red = allianceLocked ? lockedRed : Config.RED_ALLIANCE;
-        return (Config.BLUE_MIRRORS_SIDE && !red) ? -Config.ALIGN_TARGET_RIGHT_IN : Config.ALIGN_TARGET_RIGHT_IN;
     }
     private long lastBlobSeenMs = 0;
 
@@ -296,8 +342,10 @@ public class BASE_Debug extends LinearOpMode {
     public void runOpMode() {
         Config.FIELD_CENTRIC = true; // Dashboard values stay until the app restarts, so always start in field-centric
         initializeHardware();
-        setIndicatorLightPosition(RAINBOW_POSITIONS[0]);
         configurePinpoint();
+
+        lastInitRedAlliance = Config.RED_ALLIANCE;
+        allianceShowStartMs = System.currentTimeMillis();
 
         if (limelight != null) {
             limelight.setPollRateHz(100);
@@ -313,8 +361,8 @@ public class BASE_Debug extends LinearOpMode {
         fieldHeadingOffsetDeg = Config.START_HEADING_DEG;
 
         // ---------- INIT LOOP ----------
-        long initLightStartMs = System.currentTimeMillis();
         while (!isStarted() && !isStopRequested()) {
+            long now = System.currentTimeMillis();
             if (gamepad1.x && !previousInitX) {
                 Config.RED_ALLIANCE = !Config.RED_ALLIANCE;
             }
@@ -325,10 +373,15 @@ public class BASE_Debug extends LinearOpMode {
             }
             previousLeftBumper = gamepad1.dpad_left;
 
+            if (Config.RED_ALLIANCE != lastInitRedAlliance) {
+                lastInitRedAlliance = Config.RED_ALLIANCE;
+                allianceShowStartMs = now;
+            }
+
             updatePinpointConfigIfNeeded();
             updateLimelightConfigIfNeeded();
             updateWebcamExposureIfNeeded();
-            updateInitIndicatorLight(System.currentTimeMillis() - initLightStartMs);
+            updateInitIndicatorLight(now);
             if (pinpoint != null) {
                 pinpoint.update();
                 fieldHeadingOffsetDeg = headingDeg();
@@ -341,6 +394,8 @@ public class BASE_Debug extends LinearOpMode {
         lockedRed = Config.RED_ALLIANCE;
         allianceLocked = true;
 
+        long teleOpStartMs = System.currentTimeMillis();
+
         // ---------- MAIN LOOP ----------
         while (opModeIsActive()) {
             long now = System.currentTimeMillis();
@@ -348,7 +403,6 @@ public class BASE_Debug extends LinearOpMode {
             updatePinpointConfigIfNeeded();
             updateLimelightConfigIfNeeded();
             updateWebcamExposureIfNeeded();
-            updateTeleOpIndicatorLight();
             updateCustomServo(now);
 
             double robotX = 0.0, robotY = 0.0, robotHeadingDeg = 0.0;
@@ -373,8 +427,11 @@ public class BASE_Debug extends LinearOpMode {
             BallTarget ballTarget = (latestBalls != null && now - latestBallsMs <= 700)
                     ? latestBalls : null;
 
+            double matchTimeRemainingSec = 120.0 - ((now - teleOpStartMs) / 1000.0);
+            updateTeleOpIndicatorLight(now, matchTimeRemainingSec, tagView);
+
             if (autoAlignActive) {
-                runAprilTagAlign(tagView, now, robotX, robotY, robotHeadingDeg);
+                runAprilTagAlign(tagView, now);
             } else if (blobApproachActive) {
                 runBallApproach(ballTarget, now, robotHeadingDeg);
             } else {
@@ -403,17 +460,24 @@ public class BASE_Debug extends LinearOpMode {
     // SETUP
     // =====================================================================
 
-    // Rainbow order, taken from the goBILDA position table
-    private static final double[] RAINBOW_POSITIONS = {
+    // goBILDA RGB indicator servo position presets
+    private static final double COLOR_OFF_POS = 0.0;
+    private static final double COLOR_RED_POS = 0.277;
+    private static final double COLOR_ORANGE_POS = 0.333;
+    private static final double COLOR_YELLOW_POS = 0.388;
+    private static final double COLOR_GREEN_POS = 0.500;
+    private static final double COLOR_BLUE_POS = 0.611;
+
+    // Eyecatching multi-color cycle for end-of-match park warning
+    private static final double[] PARK_WARNING_COLORS = {
             0.277,  // Red
             0.333,  // Orange
             0.388,  // Yellow
             0.500,  // Green
-            0.611,  // Blue
-            0.666,  // Indigo
-            0.722   // Violet
+            0.555,  // Azure/Blue
+            0.722,  // Violet
+            1.000   // White
     };
-    private static final long INIT_LIGHT_COLOR_HOLD_MS = 500;
 
     private void setIndicatorLightPosition(double position) {
         if (rgbLight == null) return;
@@ -425,13 +489,82 @@ public class BASE_Debug extends LinearOpMode {
         }
     }
 
-    private void updateInitIndicatorLight(long elapsedMs) {
-        int index = (int) ((elapsedMs / INIT_LIGHT_COLOR_HOLD_MS) % RAINBOW_POSITIONS.length);
-        setIndicatorLightPosition(RAINBOW_POSITIONS[index]);
+    /**
+     * Updates indicator light during INIT phase:
+     * - Displays selected alliance color (Solid Red or Solid Blue) for a short period (1500ms)
+     *   whenever alliance selection is initialized or toggled.
+     * - Otherwise, displays a quick blinking blue color.
+     */
+    private void updateInitIndicatorLight(long now) {
+        if (rgbLight == null) return;
+
+        if (now - allianceShowStartMs < Config.ALLIANCE_SHOW_DURATION_MS) {
+            // Display alliance color for visual confirmation to drive team
+            double allianceColor = Config.RED_ALLIANCE ? COLOR_RED_POS : COLOR_BLUE_POS;
+            setIndicatorLightPosition(allianceColor);
+        } else {
+            // Quick blinking solid blue
+            boolean blinkOn = ((now / Config.INIT_BLINK_INTERVAL_MS) % 2) == 0;
+            double blueColor = Config.RGB_LIGHT_POSITION > 0 ? Config.RGB_LIGHT_POSITION : COLOR_BLUE_POS;
+            setIndicatorLightPosition(blinkOn ? blueColor : COLOR_OFF_POS);
+        }
     }
 
-    private void updateTeleOpIndicatorLight() {
-        setIndicatorLightPosition(Config.RGB_LIGHT_POSITION);
+    /**
+     * Updates indicator light during TeleOp phase:
+     * 1. At set time before end of match (5 seconds): eyecatching rapid color cycle to alert driver to park.
+     * 2. Auto-align active: smooth transition from Red (0% aligned) through Orange/Yellow to Green (100% aligned).
+     * 3. Otherwise: blinks solid blue color.
+     */
+    private void updateTeleOpIndicatorLight(long now, double matchTimeRemainingSec, TagView tagView) {
+        if (rgbLight == null) return;
+
+        // 1. End of match park alert (final N seconds of match)
+        if (matchTimeRemainingSec <= Config.END_GAME_PARK_WARNING_SEC && matchTimeRemainingSec >= -10.0) {
+            int colorIndex = (int) ((now / Config.PARK_WARNING_STROBE_MS) % PARK_WARNING_COLORS.length);
+            setIndicatorLightPosition(PARK_WARNING_COLORS[colorIndex]);
+            return;
+        }
+
+        // 2. Auto-align to hive color transition (Red -> Orange -> Yellow -> Green)
+        if (autoAlignActive) {
+            double progress = 0.0;
+            if (tagView != null && alignTagSeen) {
+                // Determine current yaw alignment error (including velocity lead aim offset)
+                double strafeVelIPS = 0.0;
+                if (pinpoint != null) {
+                    strafeVelIPS = pinpoint.getVelY(DistanceUnit.INCH);
+                } else if (Config.LEAD_AIM_USE_STICK_ESTIMATE) {
+                    double rawStickX = Config.REVERSE_STRAFE_STICK ? -gamepad1.left_stick_x : gamepad1.left_stick_x;
+                    strafeVelIPS = rawStickX * Config.LEAD_AIM_STICK_MAX_IPS;
+                }
+                double leadOffsetDeg = 0.0;
+                if (Config.LEAD_AIM_ENABLED && Math.abs(strafeVelIPS) >= Config.LEAD_AIM_VELOCITY_DEADZONE_IPS) {
+                    leadOffsetDeg = clip(strafeVelIPS * Config.LEAD_AIM_GAIN_DEG_PER_IPS,
+                            -Config.LEAD_AIM_MAX_OFFSET_DEG, Config.LEAD_AIM_MAX_OFFSET_DEG);
+                }
+                double effectiveYawErrDeg = Math.abs(tagView.yawErrorDeg - leadOffsetDeg);
+
+                double maxErr = Math.max(Config.ALIGN_YAW_TOLERANCE_DEG + 0.1, Config.ALIGN_LIGHT_MAX_ERROR_DEG);
+                double minErr = Config.ALIGN_YAW_TOLERANCE_DEG;
+
+                // 0.0 when error >= maxErr (Red), 1.0 when error <= minErr (Green)
+                progress = 1.0 - clip((effectiveYawErrDeg - minErr) / (maxErr - minErr), 0.0, 1.0);
+            } else {
+                // Auto-align active but tag not seen yet -> Red (0% progress)
+                progress = 0.0;
+            }
+
+            // Smooth interpolation from Red (0.277) to Green (0.500)
+            double alignColorPos = COLOR_RED_POS + progress * (COLOR_GREEN_POS - COLOR_RED_POS);
+            setIndicatorLightPosition(alignColorPos);
+            return;
+        }
+
+        // 3. Normal driving mode: blinking blue
+        boolean blinkOn = ((now / Config.TELEOP_BLINK_INTERVAL_MS) % 2) == 0;
+        double blueColor = Config.RGB_LIGHT_POSITION > 0 ? Config.RGB_LIGHT_POSITION : COLOR_BLUE_POS;
+        setIndicatorLightPosition(blinkOn ? blueColor : COLOR_OFF_POS);
     }
 
     private DcMotor getDriveMotor(String name) {
@@ -614,6 +747,7 @@ public class BASE_Debug extends LinearOpMode {
             if (now - servoPos2StartMs >= Config.SERVO_TIMER_HOLD_MS) {
                 servoStatePos1 = true;
                 servoTimerActive = false;
+                servoPos2StartMs = 0;
             }
         }
 
@@ -668,7 +802,11 @@ public class BASE_Debug extends LinearOpMode {
             normPos = 1.0 - normPos;
         }
 
-        customServo.setPosition(normPos);
+        // Caching: Only call hardware setPosition if position changed to save bus traffic & power
+        if (Math.abs(normPos - lastCustomServoPos) >= 0.0005) {
+            customServo.setPosition(normPos);
+            lastCustomServoPos = normPos;
+        }
     }
 
     // =====================================================================
@@ -694,12 +832,8 @@ public class BASE_Debug extends LinearOpMode {
                 blobApproachActive = false;
                 autoAlignActive = true;
                 alignTagSeen = false;
-                lockedAlignTagId = -1;
-                alignHoldHeadingDeg = headingDeg();
-                alignMinErr = Double.MAX_VALUE;
-                alignStartErr = -1.0;
                 alignStartMs = now;
-                assistStatus = "LOOKING FOR CELL TAGS";
+                assistStatus = "LOOKING FOR CELL TAGS (YAW ALIGN)";
             }
         }
 
@@ -728,6 +862,7 @@ public class BASE_Debug extends LinearOpMode {
                 servoTimerActive = true;
             } else {
                 servoTimerActive = false;
+                servoPos2StartMs = 0;
             }
         }
 
@@ -736,6 +871,7 @@ public class BASE_Debug extends LinearOpMode {
             if (gamepad1.dpad_up) {
                 servoStatePos1 = true;
                 servoTimerActive = false;
+                servoPos2StartMs = 0;
             } else if (gamepad1.dpad_down) {
                 servoStatePos1 = false;
                 servoPos2StartMs = now;
@@ -746,7 +882,8 @@ public class BASE_Debug extends LinearOpMode {
         if (pressedY || pressedOptions) {
             if (pinpoint != null) fieldHeadingOffsetDeg = headingDeg();
             assistStatus = "HEADING RE-ZEROED";
-        } else if (!gamepad1.y && !optionsHeld && assistStatus.equals("HEADING RE-ZEROED")) {
+            statusHoldUntilMs = now + 1500;
+        } else if (!gamepad1.y && !optionsHeld && assistStatus.equals("HEADING RE-ZEROED") && now >= statusHoldUntilMs) {
             assistStatus = "READY";
         }
 
@@ -773,7 +910,6 @@ public class BASE_Debug extends LinearOpMode {
     private void cancelAssist(String reason) {
         autoAlignActive = false;
         blobApproachActive = false;
-        lockedAlignTagId = -1;
         assistStatus = reason;
         statusHoldUntilMs = System.currentTimeMillis() + 4000;
         stopDrive();
@@ -844,6 +980,9 @@ public class BASE_Debug extends LinearOpMode {
         setMotorPowersDirect(fl, fr, bl, br);
     }
 
+    /**
+     * Motor power output with power caching threshold to eliminate redundant bus commands and save battery.
+     */
     private void setMotorPowersDirect(double fl, double fr, double bl, double br) {
         if (Config.REVERSE_FRONT_LEFT) fl = -fl;
         if (Config.REVERSE_FRONT_RIGHT) fr = -fr;
@@ -853,63 +992,123 @@ public class BASE_Debug extends LinearOpMode {
         double max = Math.max(1.0, Math.max(Math.abs(fl), Math.abs(fr)));
         max = Math.max(max, Math.max(Math.abs(bl), Math.abs(br)));
 
-        if (frontLeft != null) frontLeft.setPower(fl / max);
-        if (frontRight != null) frontRight.setPower(fr / max);
-        if (backLeft != null) backLeft.setPower(bl / max);
-        if (backRight != null) backRight.setPower(br / max);
+        double targetFL = fl / max;
+        double targetFR = fr / max;
+        double targetBL = bl / max;
+        double targetBR = br / max;
+
+        if (Math.abs(targetFL - lastFL) >= 0.001) {
+            if (frontLeft != null) frontLeft.setPower(targetFL);
+            lastFL = targetFL;
+        }
+        if (Math.abs(targetFR - lastFR) >= 0.001) {
+            if (frontRight != null) frontRight.setPower(targetFR);
+            lastFR = targetFR;
+        }
+        if (Math.abs(targetBL - lastBL) >= 0.001) {
+            if (backLeft != null) backLeft.setPower(targetBL);
+            lastBL = targetBL;
+        }
+        if (Math.abs(targetBR - lastBR) >= 0.001) {
+            if (backRight != null) backRight.setPower(targetBR);
+            lastBR = targetBR;
+        }
     }
 
     private void runIntake() {
         if (intake == null) return;
+        double targetPower = 0.0;
         if (gamepad1.left_bumper) {
-            intake.setPower(-Config.INTAKE_OUT_POWER);
+            targetPower = -Config.INTAKE_OUT_POWER;
         } else if (gamepad1.left_trigger > Config.TRIGGER_THRESHOLD) {
-            intake.setPower(Config.INTAKE_IN_POWER);
-        } else {
-            intake.setPower(0.0);
+            targetPower = Config.INTAKE_IN_POWER;
+        }
+        if (Math.abs(targetPower - lastIntakePower) >= 0.001) {
+            intake.setPower(targetPower);
+            lastIntakePower = targetPower;
         }
     }
 
     private void runShooter(long now) {
         if (shooter == null || !Config.SHOOTER_ENABLED) return;
+        double targetPower = 0.0;
         if (gamepad1.right_trigger > Config.TRIGGER_THRESHOLD) {
             if (shooterRampStartMs == 0) {
                 shooterRampStartMs = now;
             }
+
+            // Start with base speed (85% or distance-based auto speed)
+            double basePower = Config.SHOOTER_BASE_POWER;
+            if (Config.SHOOTER_AUTO_SPEED_ENABLED && latestTargetDistanceIn > 0.0) {
+                double range = Math.max(0.1, Math.abs(Config.SHOOTER_FAR_DIST_IN - Config.SHOOTER_CLOSE_DIST_IN));
+                double t = (latestTargetDistanceIn - Config.SHOOTER_CLOSE_DIST_IN) / range;
+                double autoPower = Config.SHOOTER_CLOSE_POWER + t * (Config.SHOOTER_FAR_POWER - Config.SHOOTER_CLOSE_POWER);
+                basePower = clip(autoPower, Config.SHOOTER_MIN_POWER, Config.SHOOTER_MAX_POWER);
+            }
+
+            double fullTargetPower = basePower;
+
+            // Mid-shot power bump logic: check if servo is actuated (Pos 2) and bump delay has elapsed
+            if (Config.SHOOTER_BUMP_ENABLED && !servoStatePos1 && servoPos2StartMs > 0) {
+                long elapsedSinceActuation = now - servoPos2StartMs;
+                if (elapsedSinceActuation >= Config.SHOOTER_BUMP_DELAY_MS &&
+                        (Config.SHOOTER_BUMP_DURATION_MS <= 0 || elapsedSinceActuation < (Config.SHOOTER_BUMP_DELAY_MS + Config.SHOOTER_BUMP_DURATION_MS))) {
+                    if (Config.SHOOTER_AUTO_SPEED_ENABLED && latestTargetDistanceIn > 0.0) {
+                        double bumpDelta = Config.SHOOTER_BUMP_POWER - Config.SHOOTER_BASE_POWER;
+                        fullTargetPower = clip(basePower + bumpDelta, Config.SHOOTER_MIN_POWER, Config.SHOOTER_MAX_POWER);
+                    } else {
+                        fullTargetPower = Config.SHOOTER_BUMP_POWER;
+                    }
+                }
+            }
+
+            // Optional battery voltage compensation to maintain target output as battery sags under load
+            if (Config.SHOOTER_VOLTAGE_COMP_ENABLED) {
+                double volts = getBatteryVoltage(now);
+                if (volts > 8.0) {
+                    double compFactor = Config.NOMINAL_BATTERY_VOLTAGE / volts;
+                    fullTargetPower = clip(fullTargetPower * compFactor, 0.0, Config.SHOOTER_MAX_POWER);
+                }
+            }
+
             double rampFrac = Config.SHOOTER_RAMP_UP_MS > 0
                     ? clip((double) (now - shooterRampStartMs) / Config.SHOOTER_RAMP_UP_MS, 0.0, 1.0)
                     : 1.0;
-            currentShooterPower = Config.SHOOTER_TARGET_POWER * rampFrac;
-            shooter.setPower(currentShooterPower);
+            targetPower = fullTargetPower * rampFrac;
         } else {
             shooterRampStartMs = 0;
-            currentShooterPower = 0.0;
-            shooter.setPower(0.0);
+        }
+
+        if (Math.abs(targetPower - currentShooterPower) >= 0.001 || (targetPower == 0.0 && currentShooterPower != 0.0)) {
+            currentShooterPower = targetPower;
+            shooter.setPower(currentShooterPower);
         }
     }
 
     private void stopDrive() {
-        if (frontLeft != null) frontLeft.setPower(0.0);
-        if (frontRight != null) frontRight.setPower(0.0);
-        if (backLeft != null) backLeft.setPower(0.0);
-        if (backRight != null) backRight.setPower(0.0);
+        setMotorPowersDirect(0.0, 0.0, 0.0, 0.0);
     }
 
     // =====================================================================
-    // APRILTAG ALIGN (BIOBUZZ CELLS)
+    // APRILTAG ALIGN & DISTANCE TARGETING (BIOBUZZ CELLS)
     // =====================================================================
 
     private static class TagView {
         final int tagId;
         final double forwardIn;   // + = tag is toward robot front
         final double rightIn;     // + = tag is to robot right
-        final double rawX, rawY, rawZ; // raw 3D pose numbers from Limelight
+        final double yawErrorDeg; // Horizontal target angle tx in degrees
+        final double distanceIn;  // Distance in inches from robot to tag
+        final double rawX, rawY, rawZ;
         final int tagCount;
 
-        TagView(int tagId, double forwardIn, double rightIn, double rawX, double rawY, double rawZ, int tagCount) {
+        TagView(int tagId, double forwardIn, double rightIn, double yawErrorDeg, double distanceIn,
+                double rawX, double rawY, double rawZ, int tagCount) {
             this.tagId = tagId;
             this.forwardIn = forwardIn;
             this.rightIn = rightIn;
+            this.yawErrorDeg = yawErrorDeg;
+            this.distanceIn = distanceIn;
             this.rawX = rawX;
             this.rawY = rawY;
             this.rawZ = rawZ;
@@ -943,6 +1142,23 @@ public class BASE_Debug extends LinearOpMode {
     }
 
     /**
+     * Checks if a tag belongs to a tipped hive (tilted roll/pitch orientation).
+     */
+    private static boolean isTippedHive(LLResultTypes.FiducialResult tag) {
+        if (!Config.IGNORE_TIPPED_HIVES) return false;
+        try {
+            Pose3D pose = Config.USE_ROBOT_SPACE_POSE ? tag.getTargetPoseRobotSpace() : tag.getTargetPoseCameraSpace();
+            if (pose == null || pose.getOrientation() == null) return false;
+            double roll = pose.getOrientation().getRoll(AngleUnit.DEGREES);
+            double pitch = pose.getOrientation().getPitch(AngleUnit.DEGREES);
+            return Math.abs(normalizeDegrees(roll)) > Config.TIPPED_HIVE_MAX_ROLL_DEG
+                    || Math.abs(normalizeDegrees(pitch)) > Config.TIPPED_HIVE_MAX_ROLL_DEG;
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
+    /**
      * Extracts 3D target pose in inches.
      * Returns null if pose is null or if Limelight returned an uninitialized/dummy (0,0,0) pose.
      */
@@ -965,31 +1181,37 @@ public class BASE_Debug extends LinearOpMode {
     private TagView readAprilTags() {
         if (limelight == null) {
             tagDebug = "NO LIMELIGHT IN CONFIG";
+            latestTargetDistanceIn = 0.0;
             return null;
         }
 
         LLResult result = limelight.getLatestResult();
         if (result == null) {
             tagDebug = "NO RESULT";
+            latestTargetDistanceIn = 0.0;
             return null;
         }
         if (result.getPipelineIndex() != Config.APRILTAG_PIPELINE) {
             tagDebug = "WRONG PIPELINE: Limelight is on " + result.getPipelineIndex()
                     + ", Config wants " + Config.APRILTAG_PIPELINE;
+            latestTargetDistanceIn = 0.0;
             return null;
         }
         if (!result.isValid()) {
             tagDebug = "NO TARGET SEEN";
+            latestTargetDistanceIn = 0.0;
             return null;
         }
         if (limelight.getTimeSinceLastUpdate() > 500) {
             tagDebug = "STALE DATA (" + limelight.getTimeSinceLastUpdate() + "ms)";
+            latestTargetDistanceIn = 0.0;
             return null;
         }
 
         List<LLResultTypes.FiducialResult> fiducials = result.getFiducialResults();
         if (fiducials == null || fiducials.isEmpty()) {
             tagDebug = "NO TAGS IN RESULT";
+            latestTargetDistanceIn = 0.0;
             return null;
         }
 
@@ -998,34 +1220,14 @@ public class BASE_Debug extends LinearOpMode {
 
         StringBuilder seen = new StringBuilder();
         int allowedCount = 0;
-        TagView best = null;
-        double bestError = Double.MAX_VALUE;
+        TagView closestTag = null;
+        double minDistanceIn = Double.MAX_VALUE;
 
-        // If we previously locked onto a tag ID during alignment, prefer staying locked to it
-        LLResultTypes.FiducialResult lockedFiducial = null;
-        if (lockedAlignTagId != -1) {
-            for (LLResultTypes.FiducialResult tag : fiducials) {
-                if (tag.getFiducialId() == lockedAlignTagId) {
-                    lockedFiducial = tag;
-                    break;
-                }
-            }
-        }
-
-        if (lockedFiducial != null) {
-            double[] raw = tagPoseInches(lockedFiducial);
-            if (raw != null) {
-                double forward = raw[forwardAxis] * (Config.TAG_FORWARD_NEGATE ? -1.0 : 1.0);
-                double right = raw[rightAxis] * (Config.TAG_RIGHT_NEGATE ? -1.0 : 1.0);
-                tagDebug = String.format(Locale.US, "OK - LOCKED Tag #%d", lockedAlignTagId);
-                return new TagView(lockedAlignTagId, forward, right, raw[0], raw[1], raw[2], 1);
-            }
-        }
-
-        // Search among allowed tags for the closest one to target
+        // Iterate through visible tags, filter by alliance and ignore tipped hives
         for (LLResultTypes.FiducialResult tag : fiducials) {
             seen.append(tag.getFiducialId()).append(' ');
             if (!isAllowedTag(tag.getFiducialId())) continue;
+            if (isTippedHive(tag)) continue; // Ignore tipped hives
             allowedCount++;
 
             double[] raw = tagPoseInches(tag);
@@ -1033,125 +1235,92 @@ public class BASE_Debug extends LinearOpMode {
             double forward = raw[forwardAxis] * (Config.TAG_FORWARD_NEGATE ? -1.0 : 1.0);
             double right = raw[rightAxis] * (Config.TAG_RIGHT_NEGATE ? -1.0 : 1.0);
 
-            double error = Math.hypot(forward - Config.ALIGN_TARGET_FORWARD_IN, right - targetRightIn());
-            if (error < bestError) {
-                bestError = error;
-                best = new TagView(tag.getFiducialId(), forward, right, raw[0], raw[1], raw[2], allowedCount);
+            double distanceIn = Math.hypot(forward, right);
+            double txDeg = tag.getTargetXDegrees(); // Horizontal angle offset (tx)
+
+            // Select the alliance tag closest to the bot
+            if (distanceIn < minDistanceIn) {
+                minDistanceIn = distanceIn;
+                closestTag = new TagView(tag.getFiducialId(), forward, right, txDeg, distanceIn,
+                        raw[0], raw[1], raw[2], allowedCount);
             }
         }
 
-        if (best == null) {
+        if (closestTag == null) {
             tagDebug = allowedCount == 0
-                    ? "SEES TAG IDs [" + seen.toString().trim() + "] BUT NONE IN ALIGN_TAG_IDS (" + activeTagIds() + ")"
-                    : "TAG SEEN BUT NO 3D POSE (check Limelight tag size and pose settings)";
+                    ? "SEES TAG IDs [" + seen.toString().trim() + "] BUT NONE VALID IN ALIGN_TAG_IDS (" + activeTagIds() + ")"
+                    : "TAG SEEN BUT TIPPED OR NO 3D POSE";
+            latestTargetDistanceIn = 0.0;
             return null;
         }
 
-        if (autoAlignActive && lockedAlignTagId == -1) {
-            lockedAlignTagId = best.tagId;
-        }
-
-        tagDebug = "OK - IDs [" + seen.toString().trim() + "]";
-        return new TagView(best.tagId, best.forwardIn, best.rightIn, best.rawX, best.rawY, best.rawZ, allowedCount);
+        latestTargetDistanceIn = closestTag.distanceIn;
+        tagDebug = String.format(Locale.US, "OK - Closest Tag #%d (dist %.1f in, tx %+.1f°)",
+                closestTag.tagId, closestTag.distanceIn, closestTag.yawErrorDeg);
+        return closestTag;
     }
 
     /**
-     * Drives the robot so the tag ends up right above its center (plus offsets).
-     * Uses Limelight visual feedback while visible, and switches to 2D odometry tracking
-     * via Pinpoint if tag temporarily leaves camera view.
+     * Yaw-Only Limelight Alignment with Velocity Lead Aiming:
+     * Turns the robot to face the target tag on the yaw axis, automatically adding a lead/follow angle
+     * offset based on the robot's strafe velocity when shooting on the move.
+     * Forward and strafe drive remain 0.0 so driver retains translation control or robot stays in place.
      */
-    private void runAprilTagAlign(TagView tag, long now, double robotX, double robotY, double robotHeadingDeg) {
+    private void runAprilTagAlign(TagView tag, long now) {
         if (now - alignStartMs > Config.ALIGN_TIMEOUT_MS) {
             cancelAssist("ALIGN TIMEOUT");
             return;
         }
 
-        double tolerance = Math.max(0.5, Config.ALIGN_TOLERANCE_IN);
-        double errForward, errRight;
-        boolean tagInView = tag != null;
-
-        if (tagInView) {
-            alignTagSeen = true;
-            errForward = tag.forwardIn - Config.ALIGN_TARGET_FORWARD_IN;
-            errRight = tag.rightIn - targetRightIn();
-
-            alignLastErrF = errForward;
-            alignLastErrR = errRight;
-
-            // Compute target position in Field coordinates (inches) for accurate odometry-based blind tracking
-            double rad = Math.toRadians(robotHeadingDeg);
-            alignTargetFieldX = robotX + errForward * Math.cos(rad) - errRight * Math.sin(rad);
-            alignTargetFieldY = robotY + errForward * Math.sin(rad) + errRight * Math.cos(rad);
-        } else {
+        if (tag == null) {
             if (!alignTagSeen) {
                 stopDrive();
-                assistStatus = "NO TAG YET - POINT LIMELIGHT AT TAG";
-                if (now - alignStartMs > 3000) cancelAssist("NO TAG FOUND (see Tag Debug)");
+                assistStatus = "NO TAG YET - POINT LIMELIGHT AT ALLIANCE TAG";
+                if (now - alignStartMs > 3000) cancelAssist("NO UNTIPPED ALLIANCE TAG FOUND");
                 return;
             }
-            double lastDistance = Math.hypot(alignLastErrF, alignLastErrR);
-            if (pinpoint == null || lastDistance > Config.ALIGN_BLIND_MAX_IN) {
-                cancelAssist("TAG LOST");
-                return;
-            }
-
-            // Tag out of view: use Pinpoint odometry to calculate remaining error in current robot frame
-            double dxField = alignTargetFieldX - robotX;
-            double dyField = alignTargetFieldY - robotY;
-            double rad = Math.toRadians(robotHeadingDeg);
-            errForward = dxField * Math.cos(rad) + dyField * Math.sin(rad);
-            errRight = -dxField * Math.sin(rad) + dyField * Math.cos(rad);
-        }
-
-        double distance = Math.hypot(errForward, errRight);
-        if (distance <= tolerance) {
-            cancelAssist("ALIGNED UNDER TAG " + (tagInView ? tag.tagId : ""));
+            cancelAssist("TAG LOST");
             return;
         }
 
-        // Divergence safety check
-        if (tagInView) {
-            if (alignStartErr < 0.0) alignStartErr = distance;
-            alignMinErr = Math.min(alignMinErr, distance);
-            if (now - alignStartMs > 600 && distance > alignMinErr + Config.ALIGN_DIVERGE_IN) {
-                cancelAssist("MOVING AWAY FROM TAG - check TAG_FORWARD_NEGATE or TAG_RIGHT_NEGATE");
-                return;
-            }
-            // Only enforce progress check if starting distance was significantly larger than tolerance
-            if (alignStartErr > tolerance + 4.0 && now - alignStartMs > 1800 && alignMinErr > alignStartErr - 1.0) {
-                cancelAssist("NOT GETTING CLOSER - check axis mapping and NEGATE settings");
-                return;
-            }
+        alignTagSeen = true;
+
+        // Calculate robot strafe velocity in inches per second (from Pinpoint odometry or joystick fallback)
+        double strafeVelIPS = 0.0;
+        if (pinpoint != null) {
+            strafeVelIPS = pinpoint.getVelY(DistanceUnit.INCH);
+        } else if (Config.LEAD_AIM_USE_STICK_ESTIMATE) {
+            // Fallback velocity estimate based on joystick input (respecting REVERSE_STRAFE_STICK polarity)
+            double rawStickX = Config.REVERSE_STRAFE_STICK ? -gamepad1.left_stick_x : gamepad1.left_stick_x;
+            strafeVelIPS = rawStickX * Config.LEAD_AIM_STICK_MAX_IPS;
         }
 
-        // Proportional speed with smooth ramping near target tolerance zone (eliminates 15% step overshoot)
-        double speed;
-        if (distance <= tolerance) {
-            speed = 0.0;
-        } else {
-            double propSpeed = distance * Config.ALIGN_KP;
-            speed = clip(propSpeed, Config.ALIGN_MIN_SPEED, Config.ALIGN_MAX_SPEED);
-            double rampDist = 3.0; // ramp down smoothly over the last 3 inches
-            if (distance - tolerance < rampDist) {
-                double ramp = (distance - tolerance) / rampDist;
-                speed = Math.max(Config.ALIGN_MIN_SPEED * ramp, speed * ramp);
-            }
+        // Calculate dynamic lead/follow angle offset in degrees based on strafe velocity
+        double leadOffsetDeg = 0.0;
+        if (Config.LEAD_AIM_ENABLED && Math.abs(strafeVelIPS) >= Config.LEAD_AIM_VELOCITY_DEADZONE_IPS) {
+            leadOffsetDeg = strafeVelIPS * Config.LEAD_AIM_GAIN_DEG_PER_IPS;
+            leadOffsetDeg = clip(leadOffsetDeg, -Config.LEAD_AIM_MAX_OFFSET_DEG, Config.LEAD_AIM_MAX_OFFSET_DEG);
         }
 
-        double forward = speed * errForward / distance;
-        double strafeRight = speed * errRight / distance;
+        // Target error angle on yaw axis including velocity lead/follow offset
+        double effectiveYawErrDeg = tag.yawErrorDeg - leadOffsetDeg;
 
-        double turn = 0.0;
-        if (Config.ALIGN_HOLD_HEADING && pinpoint != null) {
-            double headingError = normalizeDegrees(alignHoldHeadingDeg - robotHeadingDeg);
-            turn = clip(-headingError * Config.ALIGN_HEADING_KP, -Config.ALIGN_MAX_TURN, Config.ALIGN_MAX_TURN);
+        if (Math.abs(effectiveYawErrDeg) <= Config.ALIGN_YAW_TOLERANCE_DEG) {
+            stopDrive();
+            alignDebug = String.format(Locale.US, "YAW ALIGNED: tx %+.1f° | Lead %+.1f° (Vel %.1f in/s) | Dist %.1f in",
+                    tag.yawErrorDeg, leadOffsetDeg, strafeVelIPS, tag.distanceIn);
+            assistStatus = String.format(Locale.US, "ALIGNED TO TAG #%d (Lead %+.1f°)", tag.tagId, leadOffsetDeg);
+            return;
         }
 
-        setRobotDrive(forward, strafeRight, turn);
-        alignDebug = String.format(Locale.US, "to go: fwd %.1f in, right %.1f in | cmd fwd %.2f, strafe %.2f%s",
-                errForward, errRight, forward, strafeRight, tagInView ? "" : " (blind)");
-        assistStatus = String.format(Locale.US, "ALIGNING %s: %.1f in to go",
-                tagInView ? "TAG " + tag.tagId : "(blind)", distance);
+        // Proportional turn power on yaw axis to center crosshair on lead angle target
+        double turn = clip(-effectiveYawErrDeg * Config.ALIGN_YAW_KP, -Config.ALIGN_MAX_TURN, Config.ALIGN_MAX_TURN);
+
+        // Turn only (0.0 forward, 0.0 strafe)
+        setRobotDrive(0.0, 0.0, turn);
+        alignDebug = String.format(Locale.US, "YAW ALIGN: tx %+.1f° | Lead %+.1f° (Vel %.1f in/s) | Turn %+.2f",
+                tag.yawErrorDeg, leadOffsetDeg, strafeVelIPS, turn);
+        assistStatus = String.format(Locale.US, "YAW ALIGNING TAG #%d (Lead %+.1f°)", tag.tagId, leadOffsetDeg);
     }
 
     // =====================================================================
@@ -1244,12 +1413,14 @@ public class BASE_Debug extends LinearOpMode {
     // =====================================================================
 
     private void updateInitTelemetry() {
-        double volts = batteryVoltageSensor != null ? batteryVoltageSensor.getVoltage() : 0.0;
+        double volts = getBatteryVoltage(System.currentTimeMillis());
+        String voltStatus = volts < 11.5 ? "(CRITICAL LOW BATTERY!)" : (volts < 12.0 ? "(LOW BATTERY)" : "(GOOD)");
+
         telemetry.addLine("=== BIOBUZZ TELEOP (DEBUG) ===");
-        telemetry.addData("Battery", "%.2f V %s", volts, volts < 12.0 ? "(LOW!)" : "(GOOD)");
+        telemetry.addData("Battery Voltage", "%.2f V %s", volts, voltStatus);
         telemetry.addData("Alliance", Config.RED_ALLIANCE ? "RED (cell tags 30-37)" : "BLUE (cell tags 38-45)");
         telemetry.addData("Drive mode", Config.FIELD_CENTRIC ? "FIELD-CENTRIC" : "ROBOT-CENTRIC");
-        telemetry.addData("Tag Align (A)", Config.ENABLE_APRILTAG_AUTO_ALIGN ? "ENABLED" : "DISABLED");
+        telemetry.addData("Tag Yaw Align (A)", Config.ENABLE_APRILTAG_AUTO_ALIGN ? "ENABLED" : "DISABLED");
         telemetry.addData("Ball Approach (B)", Config.ENABLE_BLOB_AUTO_APPROACH ? "ENABLED" : "DISABLED");
         telemetry.addData("Drive motors found", "FL %s | FR %s | BL %s | BR %s",
                 frontLeft != null ? "yes" : "NO", frontRight != null ? "yes" : "NO",
@@ -1265,7 +1436,12 @@ public class BASE_Debug extends LinearOpMode {
                 headingDeg())
                 : "DISCONNECTED");
         telemetry.addData("Shooter", shooter != null
-                ? String.format(Locale.US, "%s (Name: '%s') | Ramp: %dms -> %.0f%% power", Config.SHOOTER_ENABLED ? "ENABLED" : "DISABLED", Config.SHOOTER_NAME, Config.SHOOTER_RAMP_UP_MS, Config.SHOOTER_TARGET_POWER * 100.0)
+                ? String.format(Locale.US, "%s (Name: '%s') | Base: %.0f%% -> Bump: %.0f%% (%dms delay) | AutoSpeed: %s | VoltComp: %s",
+                Config.SHOOTER_ENABLED ? "ENABLED" : "DISABLED", Config.SHOOTER_NAME,
+                Config.SHOOTER_BASE_POWER * 100.0, Config.SHOOTER_BUMP_POWER * 100.0,
+                Config.SHOOTER_BUMP_DELAY_MS,
+                Config.SHOOTER_AUTO_SPEED_ENABLED ? "ON" : "OFF",
+                Config.SHOOTER_VOLTAGE_COMP_ENABLED ? "ON" : "OFF")
                 : "NOT FOUND (Name: '" + Config.SHOOTER_NAME + "')");
         telemetry.addData("Custom Servo", customServo != null
                 ? String.format(Locale.US, "%s (Name: '%s') | Timer: %s (%dms)",
@@ -1274,46 +1450,60 @@ public class BASE_Debug extends LinearOpMode {
                 : "NOT FOUND (Name: '" + Config.SERVO_NAME + "')");
 
         telemetry.addLine("--- CONTROLS ---");
-        telemetry.addLine("[LT] Intake IN | [LB] Intake OUT | [RT] Shooter (Ramped 80% power)");
+        telemetry.addLine("[LT] Intake IN | [LB] Intake OUT | [RT] Shooter (Auto Distance Speed)");
         telemetry.addLine("[X] Toggle Alliance (Init) / Servo Pos (TeleOp)");
-        telemetry.addLine("[A] Align to cell | [B] Go to balls | [D-Pad Up/Down] Servo Pos 1/2");
+        telemetry.addLine("[A] Yaw Align to Cell Tag | [B] Go to balls | [D-Pad Up/Down] Servo Pos 1/2");
         telemetry.addLine("[Y / Options] Re-zero heading | [D-Pad Left] Field/Robot-centric | [RB + D-Pad] Wheel test");
         telemetry.update();
     }
 
     private void updateTelemetry(double robotX, double robotY, double robotHeadingDeg,
                                  TagView tag, BallTarget ball) {
-        double volts = batteryVoltageSensor != null ? batteryVoltageSensor.getVoltage() : 0.0;
+        double volts = getBatteryVoltage(System.currentTimeMillis());
+        String voltStatus = volts < 11.5 ? "(CRITICAL LOW BATTERY!)" : (volts < 12.0 ? "(LOW BATTERY)" : "");
+
         long timerRemainingMs = (Config.SERVO_AUTO_TIMER_ENABLED && servoTimerActive && !servoStatePos1)
                 ? Math.max(0, Config.SERVO_TIMER_HOLD_MS - (System.currentTimeMillis() - servoPos2StartMs))
                 : 0;
 
+        boolean bumpActive = Config.SHOOTER_BUMP_ENABLED && !servoStatePos1 && servoPos2StartMs > 0
+                && (System.currentTimeMillis() - servoPos2StartMs >= Config.SHOOTER_BUMP_DELAY_MS)
+                && (Config.SHOOTER_BUMP_DURATION_MS <= 0 || (System.currentTimeMillis() - servoPos2StartMs < Config.SHOOTER_BUMP_DELAY_MS + Config.SHOOTER_BUMP_DURATION_MS));
+
         telemetry.addData("Mode", assistStatus);
+        telemetry.addData("Battery", "%.2f V %s", volts, voltStatus);
         telemetry.addData("Drive", !Config.FIELD_CENTRIC ? "ROBOT-CENTRIC"
                 : (pinpoint == null ? "FIELD-CENTRIC (NO PINPOINT - acting robot-centric)" : "FIELD-CENTRIC"));
         telemetry.addData("Heading vs Zero", "%.1f°", normalizeDegrees(robotHeadingDeg - fieldHeadingOffsetDeg));
-        telemetry.addData("Alliance / Battery", "%s | %.2f V", lockedRed ? "RED" : "BLUE", volts);
+        telemetry.addData("Alliance", "%s", lockedRed ? "RED" : "BLUE");
         telemetry.addData("Pose", "X %5.1f | Y %5.1f | H %5.1f°", robotX, robotY, robotHeadingDeg);
+        telemetry.addData("Lead Aiming", Config.LEAD_AIM_ENABLED
+                ? String.format(Locale.US, "ENABLED | Gain: %+.2f deg/(in/s) | Max: %.1f° | Dz: %.1f in/s",
+                Config.LEAD_AIM_GAIN_DEG_PER_IPS, Config.LEAD_AIM_MAX_OFFSET_DEG, Config.LEAD_AIM_VELOCITY_DEADZONE_IPS)
+                : "DISABLED");
         telemetry.addData("Shooter", shooter != null
-                ? (currentShooterPower > 0 ? String.format(Locale.US, "RAMPING/ON (%.0f%% / target %.0f%% | %dms ramp)", currentShooterPower * 100.0, Config.SHOOTER_TARGET_POWER * 100.0, Config.SHOOTER_RAMP_UP_MS) : "OFF")
+                ? (currentShooterPower > 0
+                ? String.format(Locale.US, "ON (%.0f%% power %s%s| target dist: %.1f in)",
+                currentShooterPower * 100.0,
+                bumpActive ? "[BUMPED 95%] " : "",
+                Config.SHOOTER_AUTO_SPEED_ENABLED ? "[AUTO-DIST] " : "",
+                latestTargetDistanceIn)
+                : String.format(Locale.US, "OFF (Last Target Dist: %.1f in)", latestTargetDistanceIn))
                 : "None");
         telemetry.addData("Servo", customServo != null
-                ? String.format(Locale.US, "%s %s| Target %.1f° | Actual %.1f° | Speed %.0f°/s (Accel %.0f)",
+                ? String.format(Locale.US, "%s %s| Target %.1f° | Actual %.1f°",
                 servoStatePos1 ? "POS 1" : "POS 2",
                 (timerRemainingMs > 0 ? String.format(Locale.US, "(Timer: %.1fs) ", timerRemainingMs / 1000.0) : ""),
-                targetServoAngleDeg, currentServoAngleDeg, currentServoVelocityDegPerSec, Config.SERVO_RAMP_ACCEL_DEG_SEC2)
+                targetServoAngleDeg, currentServoAngleDeg)
                 : "None");
         telemetry.addData("Tag", tag != null
-                ? String.format(Locale.US, "#%d (%d allowed in view) | forward %.1f in, right %.1f in",
-                tag.tagId, tag.tagCount, tag.forwardIn, tag.rightIn)
-                : "None");
-        telemetry.addData("Tag raw (x, y, z in)", tag != null
-                ? String.format(Locale.US, "%.1f, %.1f, %.1f", tag.rawX, tag.rawY, tag.rawZ)
+                ? String.format(Locale.US, "#%d (dist %.1f in, tx %+.1f°)",
+                tag.tagId, tag.distanceIn, tag.yawErrorDeg)
                 : "None");
         telemetry.addData("Tag Debug", tagDebug);
         telemetry.addData("Align Debug", alignDebug);
         telemetry.addData("Balls", ball != null
-                ? String.format(Locale.US, "%d in biggest group, tx %+.1f°, height %.2f",
+                ? String.format(Locale.US, "%d in group, tx %+.1f°, height %.2f",
                 ball.count, ball.txDeg, ball.yFraction)
                 : "None");
         telemetry.update();
@@ -1373,6 +1563,12 @@ public class BASE_Debug extends LinearOpMode {
         private final Scalar COLOR_BLUE = new Scalar(255, 0, 0);
         private final Scalar COLOR_WHITE = new Scalar(255);
 
+        // Pre-allocated Point instances for zero-allocation OpenCV overlay drawing
+        private final Point ptRect1 = new Point();
+        private final Point ptRect2 = new Point();
+        private final Point ptCircle = new Point();
+        private final Point ptText = new Point();
+
         private final Mat small = new Mat(), blurred = new Mat(), rgb = new Mat(), hsv = new Mat();
         private final Mat mask = new Mat(), dist = new Mat(), hierarchy = new Mat(), noHierarchy = new Mat();
         private final Mat maskUp = new Mat();
@@ -1410,8 +1606,10 @@ public class BASE_Debug extends LinearOpMode {
                         try {
                             roiDist = dist.submat(rect);
                             roiMask = Mat.zeros(rect.size(), CvType.CV_8UC1);
+                            ptRect1.x = -rect.x;
+                            ptRect1.y = -rect.y;
                             Imgproc.drawContours(roiMask, Collections.singletonList(contour), 0, COLOR_WHITE, -1,
-                                    Imgproc.LINE_8, noHierarchy, 0, new Point(-rect.x, -rect.y));
+                                    Imgproc.LINE_8, noHierarchy, 0, ptRect1);
                             Core.MinMaxLocResult mm = Core.minMaxLoc(roiDist, roiMask);
 
                             double radius = Math.max(1.5, mm.maxVal);
@@ -1497,15 +1695,19 @@ public class BASE_Debug extends LinearOpMode {
                 for (int i = 0; i < m; i++) {
                     BallBlob b = blobs.get(i);
                     boolean inBest = findRoot(parent, i) == best;
-                    Imgproc.rectangle(input,
-                            new Point(b.left / scale, b.top / scale),
-                            new Point(b.right / scale, b.bottom / scale),
-                            inBest ? COLOR_GREEN : COLOR_YELLOW, 2);
+                    ptRect1.x = b.left / scale;
+                    ptRect1.y = b.top / scale;
+                    ptRect2.x = b.right / scale;
+                    ptRect2.y = b.bottom / scale;
+                    Imgproc.rectangle(input, ptRect1, ptRect2, inBest ? COLOR_GREEN : COLOR_YELLOW, 2);
                 }
-                Imgproc.circle(input, new Point(centerX / scale, (bottom[best] - 10) / scale),
-                        10, COLOR_BLUE, 3);
-                Imgproc.putText(input, String.valueOf(groupCount[best]),
-                        new Point(centerX / scale + 14, (bottom[best] - 10) / scale),
+                ptCircle.x = centerX / scale;
+                ptCircle.y = (bottom[best] - 10) / scale;
+                Imgproc.circle(input, ptCircle, 10, COLOR_BLUE, 3);
+
+                ptText.x = centerX / scale + 14;
+                ptText.y = (bottom[best] - 10) / scale;
+                Imgproc.putText(input, String.valueOf(groupCount[best]), ptText,
                         Imgproc.FONT_HERSHEY_SIMPLEX, 0.9, COLOR_BLUE, 2);
             } catch (Exception e) {
                 latestBalls = null;
