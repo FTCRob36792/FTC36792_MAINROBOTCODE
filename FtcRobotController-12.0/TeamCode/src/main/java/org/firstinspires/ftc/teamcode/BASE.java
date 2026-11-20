@@ -72,6 +72,12 @@ public class BASE extends LinearOpMode {
         // Off 0.0 | Red 0.277 | Orange 0.333 | Yellow 0.388 | Sage 0.444 | Green 0.500
         // Azure 0.555 | Blue 0.611 | Indigo 0.666 | Violet 0.722 | White 1.0
         public static double RGB_LIGHT_POSITION = 0.555;      // approximate #4BB4CB (blue-cyan)
+        public static long ALLIANCE_SHOW_DURATION_MS = 1500;   // Hold duration in ms to display selected alliance color (Red/Blue) when changed in init
+        public static long INIT_BLINK_INTERVAL_MS = 125;       // Quick blink interval in ms for blue light during init
+        public static long TELEOP_BLINK_INTERVAL_MS = 250;     // Blink interval in ms for blue light during normal TeleOp
+        public static double ALIGN_LIGHT_MAX_ERROR_DEG = 15.0; // Yaw error in degrees corresponding to Red (0% aligned)
+        public static double END_GAME_PARK_WARNING_SEC = 5.0;  // Seconds before end of match (120s total) to trigger park warning light cycle
+        public static long PARK_WARNING_STROBE_MS = 70;        // Strobe color cycle step interval in ms for park alert
 
         // ---------- Motor reversals (use RB + D-Pad test to check) ----------
         public static boolean REVERSE_FRONT_LEFT = true;
@@ -235,6 +241,8 @@ public class BASE extends LinearOpMode {
 
     private boolean allianceLocked = false;
     private boolean lockedRed = true;
+    private boolean lastInitRedAlliance = true;
+    private long allianceShowStartMs = 0;
 
     private String activeTagIds() {
         boolean red = allianceLocked ? lockedRed : Config.RED_ALLIANCE;
@@ -256,8 +264,10 @@ public class BASE extends LinearOpMode {
     public void runOpMode() {
         Config.FIELD_CENTRIC = true; // Dashboard values stay until the app restarts, so always start in field-centric
         initializeHardware();
-        setIndicatorLightPosition(RAINBOW_POSITIONS[0]);
         configurePinpoint();
+
+        lastInitRedAlliance = Config.RED_ALLIANCE;
+        allianceShowStartMs = System.currentTimeMillis();
 
         if (limelight != null) {
             limelight.setPollRateHz(100);
@@ -272,9 +282,8 @@ public class BASE extends LinearOpMode {
         fieldHeadingOffsetDeg = Config.START_HEADING_DEG;
 
         // ---------- INIT LOOP ----------
-        // Smoothly move the goBILDA indicator hue between red and its standard blue preset.
-        long initLightStartMs = System.currentTimeMillis();
         while (!isStarted() && !isStopRequested()) {
+            long now = System.currentTimeMillis();
             if (gamepad1.x && !previousInitX) {
                 Config.RED_ALLIANCE = !Config.RED_ALLIANCE;
             }
@@ -285,9 +294,14 @@ public class BASE extends LinearOpMode {
             }
             previousLeftBumper = gamepad1.dpad_left;
 
+            if (Config.RED_ALLIANCE != lastInitRedAlliance) {
+                lastInitRedAlliance = Config.RED_ALLIANCE;
+                allianceShowStartMs = now;
+            }
+
             updatePinpointConfigIfNeeded();
             updateWebcamExposureIfNeeded();
-            updateInitIndicatorLight(System.currentTimeMillis() - initLightStartMs);
+            updateInitIndicatorLight(now);
             if (pinpoint != null) {
                 pinpoint.update();
                 // The way the robot is facing when you press START becomes "forward" for the driver
@@ -301,13 +315,14 @@ public class BASE extends LinearOpMode {
         lockedRed = Config.RED_ALLIANCE;
         allianceLocked = true;
 
+        long teleOpStartMs = System.currentTimeMillis();
+
         // ---------- MAIN LOOP ----------
         while (opModeIsActive()) {
             long now = System.currentTimeMillis();
 
             updatePinpointConfigIfNeeded();
             updateWebcamExposureIfNeeded();
-            updateTeleOpIndicatorLight();
 
             double robotX = 0.0, robotY = 0.0, robotHeadingDeg = 0.0;
             if (pinpoint != null) {
@@ -329,6 +344,9 @@ public class BASE extends LinearOpMode {
             TagView tagView = readAprilTags();
             BallTarget ballTarget = (latestBalls != null && now - latestBallsMs <= 700)
                     ? latestBalls : null;
+
+            double matchTimeRemainingSec = 120.0 - ((now - teleOpStartMs) / 1000.0);
+            updateTeleOpIndicatorLight(now, matchTimeRemainingSec, tagView);
 
             if (autoAlignActive) {
                 runAprilTagAlign(tagView, now, robotX, robotY, robotHeadingDeg);
@@ -359,17 +377,24 @@ public class BASE extends LinearOpMode {
     // SETUP
     // =====================================================================
 
-    // Rainbow order, taken from the goBILDA position table
-    private static final double[] RAINBOW_POSITIONS = {
+    // goBILDA RGB indicator servo position presets
+    private static final double COLOR_OFF_POS = 0.0;
+    private static final double COLOR_RED_POS = 0.277;
+    private static final double COLOR_ORANGE_POS = 0.333;
+    private static final double COLOR_YELLOW_POS = 0.388;
+    private static final double COLOR_GREEN_POS = 0.500;
+    private static final double COLOR_BLUE_POS = 0.611;
+
+    // Eyecatching multi-color cycle for end-of-match park warning
+    private static final double[] PARK_WARNING_COLORS = {
             0.277,  // Red
             0.333,  // Orange
             0.388,  // Yellow
             0.500,  // Green
-            0.611,  // Blue
-            0.666,  // Indigo
-            0.722   // Violet
+            0.555,  // Azure/Blue
+            0.722,  // Violet
+            1.000   // White
     };
-    private static final long INIT_LIGHT_COLOR_HOLD_MS = 500;   // time on each color
 
     /** Applies a light position only when it has changed enough to matter. */
     private void setIndicatorLightPosition(double position) {
@@ -383,24 +408,71 @@ public class BASE extends LinearOpMode {
     }
 
     /**
-     * During INIT, show only the two solid preset colors: red for 2 seconds, then
-     * standard blue for 2 seconds, repeating. There is no interpolation, OFF command,
-     * or special end-of-cycle reset, so the light never sweeps through other colors
-     * or briefly blanks at the wraparound.
-     *
-     * Note: this is a direct color switch, not a smooth fade. The goBILDA indicator's
-     * single PWM input selects a point on its color spectrum; a fade between red and blue
-     * would necessarily display the colors between those presets.
+     * Updates indicator light during INIT phase:
+     * - Displays selected alliance color (Solid Red or Solid Blue) for a short period (1500ms)
+     *   whenever alliance selection is initialized or toggled.
+     * - Otherwise, displays a quick blinking blue color.
      */
-    /** During INIT, hard-switch through the rainbow, holding each color, then repeat. No fading. */
-    private void updateInitIndicatorLight(long elapsedMs) {
-        int index = (int) ((elapsedMs / INIT_LIGHT_COLOR_HOLD_MS) % RAINBOW_POSITIONS.length);
-        setIndicatorLightPosition(RAINBOW_POSITIONS[index]);
+    private void updateInitIndicatorLight(long now) {
+        if (rgbLight == null) return;
+
+        if (now - allianceShowStartMs < Config.ALLIANCE_SHOW_DURATION_MS) {
+            // Display alliance color for visual confirmation to drive team
+            double allianceColor = Config.RED_ALLIANCE ? COLOR_RED_POS : COLOR_BLUE_POS;
+            setIndicatorLightPosition(allianceColor);
+        } else {
+            // Quick blinking solid blue
+            boolean blinkOn = ((now / Config.INIT_BLINK_INTERVAL_MS) % 2) == 0;
+            double blueColor = Config.RGB_LIGHT_POSITION > 0 ? Config.RGB_LIGHT_POSITION : COLOR_BLUE_POS;
+            setIndicatorLightPosition(blinkOn ? blueColor : COLOR_OFF_POS);
+        }
     }
 
-    /** During TeleOp, hold the team's electric-blue color (approximately #4BB4CB). */
-    private void updateTeleOpIndicatorLight() {
-        setIndicatorLightPosition(Config.RGB_LIGHT_POSITION);
+    /**
+     * Updates indicator light during TeleOp phase:
+     * 1. At set time before end of match (5 seconds): eyecatching rapid color cycle to alert driver to park.
+     * 2. Auto-align active: smooth transition from Red (0% aligned) through Orange/Yellow to Green (100% aligned).
+     * 3. Otherwise: blinks solid blue color.
+     */
+    private void updateTeleOpIndicatorLight(long now, double matchTimeRemainingSec, TagView tagView) {
+        if (rgbLight == null) return;
+
+        // 1. End of match park alert (final N seconds of match)
+        if (matchTimeRemainingSec <= Config.END_GAME_PARK_WARNING_SEC && matchTimeRemainingSec >= -10.0) {
+            int colorIndex = (int) ((now / Config.PARK_WARNING_STROBE_MS) % PARK_WARNING_COLORS.length);
+            setIndicatorLightPosition(PARK_WARNING_COLORS[colorIndex]);
+            return;
+        }
+
+        // 2. Auto-align to hive color transition (Red -> Orange -> Yellow -> Green)
+        if (autoAlignActive) {
+            double progress = 0.0;
+            if (tagView != null && alignTagSeen) {
+                // Determine current 3D alignment error in inches
+                double errForward = tagView.forwardIn - Config.ALIGN_TARGET_FORWARD_IN;
+                double errRight = tagView.rightIn - targetRightIn();
+                double errIn = Math.hypot(errForward, errRight);
+
+                double maxErr = Math.max(Config.ALIGN_TOLERANCE_IN + 0.1, Config.ALIGN_LIGHT_MAX_ERROR_DEG);
+                double minErr = Math.max(0.5, Config.ALIGN_TOLERANCE_IN);
+
+                // 0.0 when error >= maxErr (Red), 1.0 when error <= minErr (Green)
+                progress = 1.0 - clip((errIn - minErr) / (maxErr - minErr), 0.0, 1.0);
+            } else {
+                // Auto-align active but tag not seen yet -> Red (0% progress)
+                progress = 0.0;
+            }
+
+            // Smooth interpolation from Red (0.277) to Green (0.500)
+            double alignColorPos = COLOR_RED_POS + progress * (COLOR_GREEN_POS - COLOR_RED_POS);
+            setIndicatorLightPosition(alignColorPos);
+            return;
+        }
+
+        // 3. Normal driving mode: blinking blue
+        boolean blinkOn = ((now / Config.TELEOP_BLINK_INTERVAL_MS) % 2) == 0;
+        double blueColor = Config.RGB_LIGHT_POSITION > 0 ? Config.RGB_LIGHT_POSITION : COLOR_BLUE_POS;
+        setIndicatorLightPosition(blinkOn ? blueColor : COLOR_OFF_POS);
     }
 
     private DcMotor getDriveMotor(String name) {
