@@ -1,192 +1,147 @@
 
 package org.firstinspires.ftc.teamcode;
 
-import com.qualcomm.hardware.gobilda.GoBildaPinpointDriver;
 import com.qualcomm.robotcore.eventloop.opmode.Autonomous;
 import com.qualcomm.robotcore.eventloop.opmode.LinearOpMode;
 import com.qualcomm.robotcore.hardware.DcMotor;
-import com.qualcomm.robotcore.hardware.DcMotorSimple;
-
-import org.firstinspires.ftc.robotcore.external.navigation.AngleUnit;
-import org.firstinspires.ftc.robotcore.external.navigation.DistanceUnit;
-import org.firstinspires.ftc.robotcore.external.navigation.Pose2D;
+import com.qualcomm.robotcore.hardware.Servo;
 
 @Autonomous(name = "BIOBUZZ Red Flower", group = "BIOBUZZ")
 public class RedFlowerShoot extends LinearOpMode {
 
-    private DcMotor frontLeft;
-    private DcMotor frontRight;
-    private DcMotor backLeft;
-    private DcMotor backRight;
+    private DcMotor shooter;
+    private Servo rotator;
 
-    private GoBildaPinpointDriver pinpoint;
+    private static final double SHOOTER_POWER = 0.85;
+    private static final double SERVO_REST = 0.0;
+    private static final double SERVO_ACTIVE = 0.5;
 
-    private static final double DRIVE_POWER = 0.25;
-    private static final double POSITION_TOLERANCE = 1.5;
-    private static final double HEADING_TOLERANCE = 3.0;
-    private static final double TIMEOUT_SECONDS = 10.0;
+    private static final long RAMP_UP_MS = 1200;
+    private static final long SHOOT_TIME_MS = 4000;
 
     @Override
     public void runOpMode() {
 
-        frontLeft = hardwareMap.get(DcMotor.class, "front_left");
-        frontRight = hardwareMap.get(DcMotor.class, "back_right");
-        backLeft = hardwareMap.get(DcMotor.class, "back_left");
-        backRight = hardwareMap.get(DcMotor.class, "front_right");
+        // Initialize shooter
+        shooter = hardwareMap.get(DcMotor.class, "shooter");
 
-        frontLeft.setDirection(DcMotorSimple.Direction.REVERSE);
-        frontRight.setDirection(DcMotorSimple.Direction.FORWARD);
-        backLeft.setDirection(DcMotorSimple.Direction.REVERSE);
-        backRight.setDirection(DcMotorSimple.Direction.FORWARD);
+        shooter.setDirection(DcMotor.Direction.FORWARD);
+        shooter.setZeroPowerBehavior(DcMotor.ZeroPowerBehavior.FLOAT);
+        shooter.setMode(DcMotor.RunMode.RUN_WITHOUT_ENCODER);
 
-        frontLeft.setZeroPowerBehavior(DcMotor.ZeroPowerBehavior.BRAKE);
-        frontRight.setZeroPowerBehavior(DcMotor.ZeroPowerBehavior.BRAKE);
-        backLeft.setZeroPowerBehavior(DcMotor.ZeroPowerBehavior.BRAKE);
-        backRight.setZeroPowerBehavior(DcMotor.ZeroPowerBehavior.BRAKE);
+        // Initialize feeder / rotator servo
+        rotator = hardwareMap.get(Servo.class, "servo");
 
-        pinpoint = hardwareMap.get(
-                GoBildaPinpointDriver.class, "pinpoint");
+        // Start with servo retracted
+        rotator.setPosition(SERVO_REST);
 
-        pinpoint.setOffsets(
-                -1.3420708723894255,
-                0.5144078712763749,
-                DistanceUnit.INCH);
-
-        pinpoint.setEncoderResolution(
-                GoBildaPinpointDriver.GoBildaOdometryPods.goBILDA_4_BAR_POD);
-
-        pinpoint.setEncoderDirections(
-                GoBildaPinpointDriver.EncoderDirection.FORWARD,
-                GoBildaPinpointDriver.EncoderDirection.REVERSED);
-
-        pinpoint.recalibrateIMU();
-        sleep(500);
-
-        pinpoint.resetPosAndIMU();
-        sleep(1000);
-
-        pinpoint.setPosition(new Pose2D(
-                DistanceUnit.INCH,
-                7.8515,
-                34.6159,
-                AngleUnit.DEGREES,
-                90.0));
-
-        pinpoint.update();
-
-        telemetry.addLine("BIOBUZZ RED FLOWER");
-        telemetry.addLine("Hardware initialized");
-        telemetry.addData("X", pinpoint.getPosX(DistanceUnit.INCH));
-        telemetry.addData("Y", pinpoint.getPosY(DistanceUnit.INCH));
-        telemetry.addData("Heading", pinpoint.getHeading(AngleUnit.DEGREES));
-        telemetry.addLine("Waiting for start");
+        telemetry.addLine("BIOBUZZ RED FLOWER AUTO");
+        telemetry.addLine("Shooter: READY");
+        telemetry.addLine("Rotator: REST POSITION");
+        telemetry.addLine("DRIVE: DISABLED FOR SAFETY");
+        telemetry.addLine("Waiting for start...");
         telemetry.update();
 
         waitForStart();
 
         if (isStopRequested()) {
-            stopDrive();
+            shutdown();
             return;
         }
 
-        boolean reachedFirst = driveToPose(
-                19.5508, 34.6371, 0.1037);
+        // -----------------------------------------
+        // STEP 1: RAMP UP SHOOTER
+        // -----------------------------------------
 
-        stopDrive();
+        long rampStart = System.currentTimeMillis();
 
-        telemetry.addData("First position reached", reachedFirst);
-        telemetry.update();
+        while (opModeIsActive()
+                && System.currentTimeMillis() - rampStart < RAMP_UP_MS) {
 
-    }
+            double elapsed = System.currentTimeMillis() - rampStart;
 
-    private boolean driveToPose(
-            double targetX,
-            double targetY,
-            double targetHeading) {
+            double rampFraction = elapsed / (double) RAMP_UP_MS;
 
-        double startTime = getRuntime();
+            double power = SHOOTER_POWER * rampFraction;
 
-        while (opModeIsActive()) {
+            shooter.setPower(power);
 
-            pinpoint.update();
-
-            double x = pinpoint.getPosX(DistanceUnit.INCH);
-            double y = pinpoint.getPosY(DistanceUnit.INCH);
-            double heading = pinpoint.getHeading(AngleUnit.DEGREES);
-
-            double dx = targetX - x;
-            double dy = targetY - y;
-            double distance = Math.hypot(dx, dy);
-
-            double headingError = normalizeAngle(
-                    targetHeading - heading);
-
-            telemetry.addData("X", x);
-            telemetry.addData("Y", y);
-            telemetry.addData("Heading", heading);
-            telemetry.addData("Distance remaining", distance);
-            telemetry.addData("Heading error", headingError);
+            telemetry.addLine("RAMPING UP SHOOTER");
+            telemetry.addData("Shooter Power", "%.0f%%", power * 100);
             telemetry.update();
-
-            if (distance < POSITION_TOLERANCE
-                    && Math.abs(headingError) < HEADING_TOLERANCE) {
-                stopDrive();
-                return true;
-            }
-
-            if (getRuntime() - startTime > TIMEOUT_SECONDS) {
-                stopDrive();
-                return false;
-            }
-
-            double radians = Math.toRadians(heading);
-
-            double forward = dx * Math.cos(radians)
-                    + dy * Math.sin(radians);
-
-            double strafe = dx * Math.sin(radians)
-                    - dy * Math.cos(radians);
-
-            double forwardPower = clip(forward * 0.025, DRIVE_POWER);
-            double strafePower = clip(strafe * 0.025, DRIVE_POWER);
-            double turnPower = clip(headingError * 0.012, 0.18);
-
-            double fl = forwardPower + strafePower + turnPower;
-            double fr = forwardPower - strafePower - turnPower;
-            double bl = forwardPower - strafePower + turnPower;
-            double br = forwardPower + strafePower - turnPower;
-
-            double max = Math.max(1.0,
-                    Math.max(
-                            Math.max(Math.abs(fl), Math.abs(fr)),
-                            Math.max(Math.abs(bl), Math.abs(br))));
-
-            frontLeft.setPower(fl / max);
-            frontRight.setPower(fr / max);
-            backLeft.setPower(bl / max);
-            backRight.setPower(br / max);
 
             idle();
         }
 
-        stopDrive();
-        return false;
+        if (!opModeIsActive()) {
+            shutdown();
+            return;
+        }
+
+// Bring shooter to full power
+        shooter.setPower(SHOOTER_POWER);
+
+// -----------------------------------------
+// STEP 2: WAIT FOR SHOOTER TO STABILIZE
+// -----------------------------------------
+
+        telemetry.addLine("SHOOTER AT FULL POWER");
+        telemetry.addLine("WAITING BEFORE FEEDING");
+        telemetry.update();
+
+        sleep(3000); // Wait 2 seconds before raising rotator
+
+        if (!opModeIsActive()) {
+            shutdown();
+            return;
+        }
+
+// -----------------------------------------
+// STEP 3: ACTIVATE ROTATOR
+// -----------------------------------------
+
+        rotator.setPosition(SERVO_ACTIVE);
+
+        // -----------------------------------------
+        // STEP 3: SHOOT FOR 7 SECONDS
+        // -----------------------------------------
+
+        long shootingStart = System.currentTimeMillis();
+
+        while (opModeIsActive()
+                && System.currentTimeMillis() - shootingStart < SHOOT_TIME_MS) {
+
+            double remaining =
+                    SHOOT_TIME_MS
+                            - (System.currentTimeMillis() - shootingStart);
+
+            telemetry.addLine("SHOOTING");
+            telemetry.addData("Shooter Power", "85%%");
+            telemetry.addData("Time Remaining", "%.1f seconds",
+                    remaining / 1000.0);
+            telemetry.addData("Rotator", "ACTIVE");
+            telemetry.update();
+
+            idle();
+        }
+
+        // -----------------------------------------
+        // STEP 4: SHUT DOWN
+        // -----------------------------------------
+
+        shutdown();
+
+        telemetry.addLine("AUTO COMPLETE");
+        telemetry.update();
     }
 
-    private double normalizeAngle(double angle) {
-        while (angle > 180) angle -= 360;
-        while (angle < -180) angle += 360;
-        return angle;
-    }
+    private void shutdown() {
+        if (shooter != null) {
+            shooter.setPower(0);
+        }
 
-    private double clip(double value, double limit) {
-        return Math.max(-limit, Math.min(limit, value));
-    }
-
-    private void stopDrive() {
-        frontLeft.setPower(0);
-        frontRight.setPower(0);
-        backLeft.setPower(0);
-        backRight.setPower(0);
+        if (rotator != null) {
+            rotator.setPosition(SERVO_REST);
+        }
     }
 }
