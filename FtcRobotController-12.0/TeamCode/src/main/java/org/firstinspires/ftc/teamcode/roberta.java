@@ -75,9 +75,9 @@ public class roberta extends LinearOpMode {
         public static boolean SHOOTER_ENABLED = true;          // Enable or disable shooter motor control loop
         public static boolean REVERSE_SHOOTER = false;         // Reverse shooter motor spinning direction
         public static double SHOOTER_BASE_POWER = 0.85;        // Base shooter motor power before mid-shot bump (85%)
-        public static double SHOOTER_BUMP_POWER = 0.95;        // Bumped shooter motor power mid-shot (95%)
-        public static boolean SHOOTER_BUMP_ENABLED = false;     // Enable shooter power bump mid-shot
-        public static long SHOOTER_BUMP_DELAY_MS = 150;        // Timed delay in ms after servo actuates (Pos 2) before bumping power
+        public static double SHOOTER_BUMP_POWER = 1.00;        // Bumped shooter motor power mid-shot (95%)
+        public static boolean SHOOTER_BUMP_ENABLED = true;     // Enable shooter power bump mid-shot
+        public static long SHOOTER_BUMP_DELAY_MS = 200;        // Timed delay in ms after servo actuates (Pos 2) before bumping power
         public static long SHOOTER_BUMP_DURATION_MS = 500;     // Duration in ms to hold power bump (0 = hold while servo is extended)
         public static double SHOOTER_TARGET_POWER = 0.85;      // Target motor power fallback / legacy alias
         public static long SHOOTER_RAMP_UP_MS = 0;             // Power ramp-up duration in milliseconds (0 = instant speed)
@@ -85,10 +85,10 @@ public class roberta extends LinearOpMode {
         // ---------- Auto Shooter Distance-Speed Calibration ----------
         public static boolean SHOOTER_AUTO_SPEED_ENABLED = false; // Auto-adjust shooter power based on Limelight target distance
         public static double SHOOTER_CLOSE_DIST_IN = 36.0;        // Close calibration distance in inches (e.g. 3 feet)
-        public static double SHOOTER_CLOSE_POWER = 0.60;          // Shooter motor power at close distance (e.g. 60%)
+        public static double SHOOTER_CLOSE_POWER = 0.80;          // Shooter motor power at close distance (e.g. 60%)
         public static double SHOOTER_FAR_DIST_IN = 120.0;         // Far calibration distance in inches (e.g. 10 feet)
         public static double SHOOTER_FAR_POWER = 1.00;            // Shooter motor power at far distance (e.g. 100%)
-        public static double SHOOTER_MIN_POWER = 0.40;            // Minimum clamped shooter power limit
+        public static double SHOOTER_MIN_POWER = 0.80;            // Minimum clamped shooter power limit
         public static double SHOOTER_MAX_POWER = 1.00;            // Maximum clamped shooter power limit
 
         // ---------- Shooter Battery Voltage Compensation ----------
@@ -106,7 +106,7 @@ public class roberta extends LinearOpMode {
         public static double SERVO_RAMP_ACCEL_DEG_SEC2 = 0.0;  // Acceleration limit in deg/sec² for smooth speed ramping (0 = instant speed change)
         public static double SERVO_RAMP_DECEL_DISTANCE_DEG = 0.0; // Distance in degrees to begin decelerating smoothly near target angle (0 = no decel ramp)
         public static boolean SERVO_AUTO_TIMER_ENABLED = true;// True = automatically return servo to Position 1 after holding Position 2
-        public static long SERVO_TIMER_HOLD_MS = 5000;        // Hold duration in milliseconds at Position 2 before auto-returning to Position 1 (0 = disabled)
+        public static long SERVO_TIMER_HOLD_MS = 2500;        // Hold duration in milliseconds at Position 2 before auto-returning to Position 1 (0 = disabled)
 
         // =====================================================================
         // 2. INTAKE SUBSYSTEM
@@ -119,16 +119,19 @@ public class roberta extends LinearOpMode {
         // =====================================================================
         // 3. VISION & AUTO-AIM SUBSYSTEM (LIMELIGHT 3A & APRILTAGS)
         // =====================================================================
-        public static boolean ENABLE_APRILTAG_AUTO_ALIGN = false;// Master lock for Gamepad 1 [A] AprilTag auto-align feature
+        public static boolean ENABLE_APRILTAG_AUTO_ALIGN = true;// Master lock for Gamepad 1 [A] AprilTag auto-align feature
         public static int APRILTAG_PIPELINE = 0;              // Limelight pipeline index configured for AprilTag detection
         public static String RED_ALIGN_TAG_IDS = "31,35";     // Comma-separated list of allowed AprilTag IDs on RED alliance
         public static String BLUE_ALIGN_TAG_IDS = "39,43";    // Comma-separated list of allowed AprilTag IDs on BLUE alliance
-        public static double ALIGN_YAW_KP = 0.015;            // Proportional turn power gain per degree of horizontal yaw offset (tx)
-        public static double ALIGN_YAW_TOLERANCE_DEG = 1.0;   // Horizontal yaw alignment complete tolerance in degrees
-        public static double ALIGN_MAX_TURN = 0.35;           // Maximum turn power limit during yaw alignment
+
+        // ---------- Yaw alignment power (the settings that actually drive the turn) ----------
+        public static double ALIGN_YAW_KP = 0.03;            // Proportional turn power gain per degree of horizontal yaw offset (tx)
+        public static double ALIGN_MIN_TURN = 0.1;           // Minimum turn power while outside tolerance (overcomes motor stall near target)
+        public static double ALIGN_MAX_TURN = 0.5;           // Maximum turn power limit during yaw alignment
+        public static double ALIGN_YAW_TOLERANCE_DEG = 5.0;   // Horizontal yaw alignment complete tolerance in degrees
         public static long ALIGN_TIMEOUT_MS = 6000;           // Maximum alignment duration in milliseconds
 
-        // ---------- BASE positional approach target / motion control ----------
+        // ---------- BASE positional approach target / motion control (NOT used by the yaw-only align) ----------
         public static double ALIGN_TARGET_FORWARD_IN = 50.0;  // Desired tag position ahead of robot center
         public static double ALIGN_TARGET_RIGHT_IN = 40.5;    // Desired tag position right of robot center
         public static boolean BLUE_MIRRORS_SIDE = true;       // Mirror target-right offset for BLUE alliance
@@ -231,7 +234,7 @@ public class roberta extends LinearOpMode {
         // Off 0.0 | Red 0.277 | Orange 0.333 | Yellow 0.388 | Sage 0.444 | Green 0.500 | Azure 0.555 | Blue 0.611 | Indigo 0.666 | Violet 0.722 | White 1.0
         public static double RGB_LIGHT_POSITION = 0.555;      // Preset servo position for electric blue indicator color (#4BB4CB)
         public static long ALLIANCE_SHOW_DURATION_MS = 1500;   // Hold duration in ms to display selected alliance color (Red/Blue) when changed in init
-        public static long INIT_BLINK_INTERVAL_MS = 1000;       // Quick blink interval in ms for blue light during init
+        public static long INIT_BLINK_INTERVAL_MS = 125;       // Quick blink interval in ms for blue light during init
         public static long TELEOP_BLINK_INTERVAL_MS = 250;     // Blink interval in ms for blue light during normal TeleOp
         public static double ALIGN_LIGHT_MAX_ERROR_DEG = 15.0; // Yaw error in degrees corresponding to Red (0% aligned)
         public static double END_GAME_PARK_WARNING_SEC = 5.0;  // Seconds before end of match (120s total) to trigger park warning light cycle
@@ -466,7 +469,7 @@ public class roberta extends LinearOpMode {
             updateTeleOpIndicatorLight(now, matchTimeRemainingSec, tagView);
 
             if (autoAlignActive) {
-                runAprilTagAlign(tagView, now, robotX, robotY, robotHeadingDeg);
+                runAprilTagAlign(tagView, now);
             } else if (blobApproachActive) {
                 runBallApproach(ballTarget, now, robotHeadingDeg);
             } else {
@@ -1241,179 +1244,161 @@ public class roberta extends LinearOpMode {
         }
 
         List<LLResultTypes.FiducialResult> fiducials = result.getFiducialResults();
-        if (fiducials == null || fiducials.isEmpty()) {
-            tagDebug = "NO TAGS IN RESULT";
-            latestTargetDistanceIn = 0.0;
-            return null;
-        }
 
         int forwardAxis = Math.max(0, Math.min(2, Config.TAG_FORWARD_AXIS));
         int rightAxis = Math.max(0, Math.min(2, Config.TAG_RIGHT_AXIS));
+
         StringBuilder seen = new StringBuilder();
         int allowedCount = 0;
-        TagView best = null;
-        double bestPositionError = Double.MAX_VALUE;
+        TagView closestIndividualTag = null;
+        double minDistanceIn = Double.MAX_VALUE;
+        double minAbsTx = Double.MAX_VALUE;
 
-        for (LLResultTypes.FiducialResult tag : fiducials) {
-            seen.append(tag.getFiducialId()).append(' ');
-            if (!isAllowedTag(tag.getFiducialId())) continue;
-            if (isTippedHive(tag)) continue;
-            allowedCount++;
+        if (fiducials != null && !fiducials.isEmpty()) {
+            for (LLResultTypes.FiducialResult tag : fiducials) {
+                seen.append(tag.getFiducialId()).append(' ');
+                if (!isAllowedTag(tag.getFiducialId())) continue;
+                if (isTippedHive(tag)) continue;
+                allowedCount++;
 
-            double[] raw = tagPoseInches(tag);
-            if (raw == null) continue;
+                double txDeg = tag.getTargetXDegrees();
+                double forward = 0.0, right = 0.0, distanceIn = 0.0;
+                double[] raw = tagPoseInches(tag);
 
-            double forward = raw[forwardAxis] * (Config.TAG_FORWARD_NEGATE ? -1.0 : 1.0);
-            double right = raw[rightAxis] * (Config.TAG_RIGHT_NEGATE ? -1.0 : 1.0);
-            double distanceIn = Math.hypot(forward, right);
-            double yawErrorDeg = tag.getTargetXDegrees();
+                if (raw != null) {
+                    forward = raw[forwardAxis] * (Config.TAG_FORWARD_NEGATE ? -1.0 : 1.0);
+                    right = raw[rightAxis] * (Config.TAG_RIGHT_NEGATE ? -1.0 : 1.0);
+                    distanceIn = Math.hypot(forward, right);
+                } else {
+                    raw = new double[]{0.0, 0.0, 0.0};
+                }
 
-            // Prefer the tag whose position is closest to the BASE alignment destination.
-            double positionError = Math.hypot(
-                    forward - Config.ALIGN_TARGET_FORWARD_IN,
-                    right - targetRightIn());
-            if (positionError < bestPositionError) {
-                bestPositionError = positionError;
-                best = new TagView(tag.getFiducialId(), forward, right, yawErrorDeg,
-                        distanceIn, raw[0], raw[1], raw[2], allowedCount);
+                if (distanceIn > 0.0) {
+                    if (distanceIn < minDistanceIn) {
+                        minDistanceIn = distanceIn;
+                        closestIndividualTag = new TagView(tag.getFiducialId(), forward, right, txDeg, distanceIn,
+                                raw[0], raw[1], raw[2], allowedCount);
+                    }
+                } else {
+                    if (Math.abs(txDeg) < minAbsTx) {
+                        minAbsTx = Math.abs(txDeg);
+                        closestIndividualTag = new TagView(tag.getFiducialId(), forward, right, txDeg, 0.0,
+                                raw[0], raw[1], raw[2], allowedCount);
+                    }
+                }
             }
         }
 
-        if (best == null) {
-            tagDebug = allowedCount == 0
-                    ? "SEES TAG IDs [" + seen.toString().trim() + "] BUT NONE VALID IN ALIGN_TAG_IDS (" + activeTagIds() + ")"
-                    : "TAG SEEN BUT TIPPED OR NO 3D POSE";
+        // If individual fiducial tags were detected but none matched active alliance tags, skip target
+        if (fiducials != null && !fiducials.isEmpty() && allowedCount == 0) {
+            tagDebug = "SEES TAG IDs [" + seen.toString().trim() + "] BUT NONE VALID IN ALIGN_TAG_IDS (" + activeTagIds() + ")";
             latestTargetDistanceIn = 0.0;
             return null;
         }
 
-        latestTargetDistanceIn = best.distanceIn;
-        tagDebug = String.format(Locale.US, "OK - Tag #%d (dist %.1f in, tx %+.1f°)",
-                best.tagId, best.distanceIn, best.yawErrorDeg);
-        return new TagView(best.tagId, best.forwardIn, best.rightIn, best.yawErrorDeg,
-                best.distanceIn, best.rawX, best.rawY, best.rawZ, allowedCount);
+        // PRIMARY: Use grouped target centroid crosshair (result.getTx()) when Limelight auto-groups tags on the hive
+        if (result.isValid()) {
+            double groupTx = result.getTx();
+            double groupTy = result.getTy();
+
+            double fwd = closestIndividualTag != null ? closestIndividualTag.forwardIn : 0.0;
+            double rgt = closestIndividualTag != null ? closestIndividualTag.rightIn : 0.0;
+            double dist = closestIndividualTag != null ? closestIndividualTag.distanceIn : 0.0;
+            double rx = closestIndividualTag != null ? closestIndividualTag.rawX : 0.0;
+            double ry = closestIndividualTag != null ? closestIndividualTag.rawY : 0.0;
+            double rz = closestIndividualTag != null ? closestIndividualTag.rawZ : 0.0;
+
+            latestTargetDistanceIn = dist;
+            tagDebug = String.format(Locale.US, "OK - Grouped Hive Target (tx %+.1f°, ty %+.1f°, tags %d)",
+                    groupTx, groupTy, allowedCount > 0 ? allowedCount : (fiducials != null ? fiducials.size() : 1));
+            return new TagView(-1, fwd, rgt, groupTx, dist, rx, ry, rz, allowedCount);
+        }
+
+        // FALLBACK: Use individual fiducial tag if grouped target result is not valid
+        if (closestIndividualTag != null) {
+            latestTargetDistanceIn = closestIndividualTag.distanceIn;
+            tagDebug = String.format(Locale.US, "OK - Individual Tag #%d (dist %.1f in, tx %+.1f°)",
+                    closestIndividualTag.tagId, closestIndividualTag.distanceIn, closestIndividualTag.yawErrorDeg);
+            return closestIndividualTag;
+        }
+
+        tagDebug = "NO TARGET SEEN";
+        latestTargetDistanceIn = 0.0;
+        return null;
     }
 
     /**
-     * Combined BASE positional AprilTag approach and MainDev yaw/velocity-lead alignment.
-     * The robot drives toward the configured tag-relative destination while correcting yaw.
-     * If the tag is briefly lost near the destination, BASE's Pinpoint blind-finish behavior is retained.
+     * Yaw-Only Limelight Alignment with Velocity Lead Aiming:
+     * Turns the robot to face the target tag on the yaw axis, automatically adding a lead/follow angle
+     * offset based on the robot's strafe velocity when shooting on the move.
+     * Forward and strafe drive remain 0.0 so driver retains translation control or robot stays in place.
+     *
+     * Turn power = clip(error * ALIGN_YAW_KP, +/-ALIGN_MAX_TURN), but never smaller than
+     * ALIGN_MIN_TURN while the error is outside ALIGN_YAW_TOLERANCE_DEG.
      */
-    private void runAprilTagAlign(TagView tag, long now,
-                                  double robotX, double robotY, double robotHeadingDeg) {
+    private void runAprilTagAlign(TagView tag, long now) {
         if (now - alignStartMs > Config.ALIGN_TIMEOUT_MS) {
             cancelAssist("ALIGN TIMEOUT");
             return;
         }
 
-        double tolerance = Math.max(0.5, Config.ALIGN_TOLERANCE_IN);
-        double errForward;
-        double errRight;
-        boolean tagInView = tag != null;
-
-        if (tagInView) {
-            alignTagSeen = true;
-            lastAlignTagSeenMs = now;
-            errForward = tag.forwardIn - Config.ALIGN_TARGET_FORWARD_IN;
-            errRight = tag.rightIn - targetRightIn();
-            alignLastErrForward(errForward, errRight, robotX, robotY);
-        } else {
+        if (tag == null) {
             if (!alignTagSeen) {
                 stopDrive();
-                assistStatus = "NO TAG YET - POINT LIMELIGHT AT AN UNTIPPED ALLIANCE TAG";
+                assistStatus = "NO TAG YET - POINT LIMELIGHT AT ALLIANCE TAG";
                 if (now - alignStartMs > 3000) cancelAssist("NO UNTIPPED ALLIANCE TAG FOUND");
                 return;
             }
-
-            double lastDistance = Math.hypot(alignLastErrF, alignLastErrR);
-            if (pinpoint == null || lastDistance > Config.ALIGN_BLIND_MAX_IN) {
-                cancelAssist("TAG LOST");
-                return;
-            }
-            if (lastDistance < 1e-6) {
-                cancelAssist("ALIGNED (tag lost)");
-                return;
-            }
-
-            double traveled = Math.hypot(robotX - alignLastSeenX, robotY - alignLastSeenY);
-            double remaining = lastDistance - traveled;
-            if (remaining <= tolerance) {
-                cancelAssist("ALIGNED (tag out of view)");
-                return;
-            }
-            errForward = alignLastErrF * (remaining / lastDistance);
-            errRight = alignLastErrR * (remaining / lastDistance);
+            cancelAssist("TAG LOST");
+            return;
         }
 
-        double distance = Math.hypot(errForward, errRight);
+        alignTagSeen = true;
 
-        // MainDev velocity-lead calculation. Pinpoint is preferred; stick estimate is the fallback.
+        // Calculate robot strafe velocity in inches per second (from Pinpoint odometry or joystick fallback)
         double strafeVelIPS = 0.0;
         if (pinpoint != null) {
             strafeVelIPS = pinpoint.getVelY(DistanceUnit.INCH);
         } else if (Config.LEAD_AIM_USE_STICK_ESTIMATE) {
-            double rawStickX = Config.REVERSE_STRAFE_STICK
-                    ? -gamepad1.left_stick_x : gamepad1.left_stick_x;
+            // Fallback velocity estimate based on joystick input (respecting REVERSE_STRAFE_STICK polarity)
+            double rawStickX = Config.REVERSE_STRAFE_STICK ? -gamepad1.left_stick_x : gamepad1.left_stick_x;
             strafeVelIPS = rawStickX * Config.LEAD_AIM_STICK_MAX_IPS;
         }
 
+        // Calculate dynamic lead/follow angle offset in degrees based on strafe velocity
         double leadOffsetDeg = 0.0;
-        if (Config.LEAD_AIM_ENABLED
-                && Math.abs(strafeVelIPS) >= Config.LEAD_AIM_VELOCITY_DEADZONE_IPS) {
-            leadOffsetDeg = clip(strafeVelIPS * Config.LEAD_AIM_GAIN_DEG_PER_IPS,
-                    -Config.LEAD_AIM_MAX_OFFSET_DEG, Config.LEAD_AIM_MAX_OFFSET_DEG);
+        if (Config.LEAD_AIM_ENABLED && Math.abs(strafeVelIPS) >= Config.LEAD_AIM_VELOCITY_DEADZONE_IPS) {
+            leadOffsetDeg = strafeVelIPS * Config.LEAD_AIM_GAIN_DEG_PER_IPS;
+            leadOffsetDeg = clip(leadOffsetDeg, -Config.LEAD_AIM_MAX_OFFSET_DEG, Config.LEAD_AIM_MAX_OFFSET_DEG);
         }
 
-        double effectiveYawErrorDeg = tagInView ? tag.yawErrorDeg - leadOffsetDeg : 0.0;
-        boolean yawAligned = !tagInView
-                || Math.abs(effectiveYawErrorDeg) <= Config.ALIGN_YAW_TOLERANCE_DEG;
+        // Target error angle on yaw axis including velocity lead/follow offset
+        double effectiveYawErrDeg = tag.yawErrorDeg - leadOffsetDeg;
 
-        // Safety: if positional error keeps increasing, stop and ask for axis/direction checks.
-        if (tagInView) {
-            if (alignStartErr < 0.0) alignStartErr = distance;
-            alignMinErr = Math.min(alignMinErr, distance);
-            if (now - alignStartMs > 600 && distance > alignMinErr + Config.ALIGN_DIVERGE_IN) {
-                cancelAssist("MOVING AWAY FROM TAG - CHECK TAG AXES / NEGATE SETTINGS");
-                return;
-            }
-            if (now - alignStartMs > 1500 && alignMinErr > alignStartErr - 1.0) {
-                cancelAssist("NOT GETTING CLOSER - CHECK TAG AXES / TARGET OFFSETS");
-                return;
-            }
-        }
-
-        if (distance <= tolerance && yawAligned) {
-            cancelAssist("ALIGNED TO TAG " + (tagInView ? tag.tagId : "(blind finish)"));
+        if (Math.abs(effectiveYawErrDeg) <= Config.ALIGN_YAW_TOLERANCE_DEG) {
+            stopDrive();
+            alignDebug = String.format(Locale.US, "YAW ALIGNED: tx %+.1f° | Lead %+.1f° (Vel %.1f in/s) | Dist %.1f in",
+                    tag.yawErrorDeg, leadOffsetDeg, strafeVelIPS, tag.distanceIn);
+            assistStatus = String.format(Locale.US, "ALIGNED TO TAG %s (Lead %+.1f°)",
+                    tag.tagId >= 0 ? "#" + tag.tagId : "GROUP", leadOffsetDeg);
             return;
         }
 
-        double forward = 0.0;
-        double strafeRight = 0.0;
-        if (distance > tolerance) {
-            double speed = clip(distance * Config.ALIGN_KP, 0.0, Config.ALIGN_MAX_SPEED);
-            speed = Math.max(speed, Config.ALIGN_MIN_SPEED);
-            forward = speed * errForward / distance;
-            strafeRight = speed * errRight / distance;
+        // Proportional turn power on yaw axis to center crosshair on lead angle target
+        double turn = clip(-effectiveYawErrDeg * Config.ALIGN_YAW_KP, -Config.ALIGN_MAX_TURN, Config.ALIGN_MAX_TURN);
+
+        // Enforce a minimum turn power so the robot doesn't stall just short of the target
+        double minTurn = Math.min(Math.max(0.0, Config.ALIGN_MIN_TURN), Config.ALIGN_MAX_TURN);
+        if (Math.abs(turn) < minTurn) {
+            turn = Math.copySign(minTurn, turn == 0.0 ? -effectiveYawErrDeg : turn);
         }
 
-        double turn = 0.0;
-        if (tagInView && !yawAligned) {
-            turn = clip(-effectiveYawErrorDeg * Config.ALIGN_YAW_KP,
-                    -Config.ALIGN_MAX_TURN, Config.ALIGN_MAX_TURN);
-        } else if (Config.ALIGN_HOLD_HEADING && pinpoint != null) {
-            double headingError = normalizeDegrees(alignHoldHeadingDeg - robotHeadingDeg);
-            turn = clip(-headingError * Config.ALIGN_HEADING_KP,
-                    -Config.ALIGN_MAX_HEADING_TURN, Config.ALIGN_MAX_HEADING_TURN);
-        }
-
-        setRobotDrive(forward, strafeRight, turn);
-        alignDebug = String.format(Locale.US,
-                "to go: fwd %.1f in, right %.1f in | yaw %+.1f° | lead %+.1f° | cmd %.2f / %.2f / %.2f%s",
-                errForward, errRight, tagInView ? tag.yawErrorDeg : 0.0,
-                leadOffsetDeg, forward, strafeRight, turn, tagInView ? "" : " (tag out of view)");
-        assistStatus = String.format(Locale.US, "ALIGNING %s: %.1f in, yaw %+.1f°",
-                tagInView ? "TAG " + tag.tagId : "(blind)", distance,
-                tagInView ? effectiveYawErrorDeg : 0.0);
+        // Turn only (0.0 forward, 0.0 strafe)
+        setRobotDrive(0.0, 0.0, turn);
+        alignDebug = String.format(Locale.US, "YAW ALIGN: tx %+.1f° | Lead %+.1f° (Vel %.1f in/s) | Turn %+.2f",
+                tag.yawErrorDeg, leadOffsetDeg, strafeVelIPS, turn);
+        assistStatus = String.format(Locale.US, "YAW ALIGNING TAG %s (Lead %+.1f°)",
+                tag.tagId >= 0 ? "#" + tag.tagId : "GROUP", leadOffsetDeg);
     }
 
     private void alignLastErrForward(double errForward, double errRight, double robotX, double robotY) {
