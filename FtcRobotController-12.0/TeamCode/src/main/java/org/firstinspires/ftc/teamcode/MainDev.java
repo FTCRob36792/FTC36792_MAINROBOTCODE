@@ -6,6 +6,7 @@ import com.qualcomm.hardware.gobilda.GoBildaPinpointDriver;
 import com.qualcomm.hardware.limelightvision.LLResult;
 import com.qualcomm.hardware.limelightvision.LLResultTypes;
 import com.qualcomm.hardware.limelightvision.Limelight3A;
+import com.qualcomm.robotcore.eventloop.opmode.Disabled;
 import com.qualcomm.robotcore.eventloop.opmode.LinearOpMode;
 import com.qualcomm.robotcore.eventloop.opmode.TeleOp;
 import com.qualcomm.robotcore.hardware.DcMotor;
@@ -60,6 +61,7 @@ import java.util.concurrent.TimeUnit;
  * entered on Limelight settings page so tag positions are measured from robot center.
  */
 @TeleOp(name = "MAIN DEV", group = "MAIN")
+@Disabled
 public class MainDev extends LinearOpMode {
 
     @com.acmerobotics.dashboard.config.Config

@@ -65,6 +65,7 @@ import java.util.concurrent.TimeUnit;
  * compensation, advanced Limelight filtering, distance-based shooter power, and
  * velocity-lead yaw correction.
  */
+
 @TeleOp(name = "BIOBUZZ ROBERTA", group = "BIOBUZZ")
 public class roberta extends LinearOpMode {
 
@@ -253,8 +254,8 @@ public class roberta extends LinearOpMode {
         // Off 0.0 | Red 0.277 | Orange 0.333 | Yellow 0.388 | Sage 0.444 | Green 0.500 | Azure 0.555 | Blue 0.611 | Indigo 0.666 | Violet 0.722 | White 1.0
         public static double RGB_LIGHT_POSITION = 0.555;      // Preset servo position for electric blue indicator color (#4BB4CB)
         public static long ALLIANCE_SHOW_DURATION_MS = 1500;   // Hold duration in ms to display selected alliance color (Red/Blue) when changed in init
-        public static long INIT_BLINK_INTERVAL_MS = 125;       // Quick blink interval in ms for blue light during init
-        public static long TELEOP_BLINK_INTERVAL_MS = 250;     // Blink interval in ms for blue light during normal TeleOp
+        public static long INIT_BLINK_INTERVAL_MS = 1000;       // Quick blink interval in ms for blue light during init
+        public static long TELEOP_BLINK_INTERVAL_MS = 2000;     // Blink interval in ms for blue light during normal TeleOp
         public static double ALIGN_LIGHT_MAX_ERROR_DEG = 15.0; // Yaw error in degrees corresponding to Red (0% aligned)
         public static double END_GAME_PARK_WARNING_SEC = 5.0;  // Seconds before end of match (120s total) to trigger park warning light cycle
         public static long PARK_WARNING_STROBE_MS = 70;        // Strobe color cycle step interval in ms for park alert
