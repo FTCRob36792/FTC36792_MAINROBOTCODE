@@ -1,5 +1,6 @@
 package org.firstinspires.ftc.teamcode;
 
+import com.qualcomm.robotcore.eventloop.opmode.Disabled;
 import com.qualcomm.robotcore.eventloop.opmode.LinearOpMode;
 import com.qualcomm.robotcore.eventloop.opmode.TeleOp;
 import com.qualcomm.robotcore.hardware.DcMotor;
@@ -31,6 +32,7 @@ import java.util.List;
  *  - Y            : BUTTON motor at -25%
  */
 @TeleOp(name = "Motor Port Test", group = "Test")
+@Disabled
 public class MotorPortTest extends LinearOpMode {
 
     // ===== ADJUST THESE IN THE CODE =====

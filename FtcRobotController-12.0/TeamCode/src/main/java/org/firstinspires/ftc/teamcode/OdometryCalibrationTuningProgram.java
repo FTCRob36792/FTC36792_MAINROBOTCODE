@@ -20,6 +20,7 @@
 
 package org.firstinspires.ftc.teamcode;
 
+import com.qualcomm.robotcore.eventloop.opmode.Disabled;
 import com.qualcomm.robotcore.eventloop.opmode.OpMode;
 import com.qualcomm.robotcore.eventloop.opmode.TeleOp;
 import com.qualcomm.robotcore.hardware.DcMotor;
@@ -65,6 +66,7 @@ class OdometryData {
 
 
 @TeleOp(name = "Odometry Calibration Tuning Program", group = "Calibration")
+@Disabled
 public class OdometryCalibrationTuningProgram extends OpMode {
 
     // =========================================================================
