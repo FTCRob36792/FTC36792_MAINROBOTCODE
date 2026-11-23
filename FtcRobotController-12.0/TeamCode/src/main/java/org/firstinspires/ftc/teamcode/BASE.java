@@ -79,7 +79,22 @@ public class BASE extends LinearOpMode {
         public static long TELEOP_BLINK_INTERVAL_MS = 250;     // Blink interval in ms for blue light during normal TeleOp
         public static double ALIGN_LIGHT_MAX_ERROR_DEG = 15.0; // Yaw error in degrees corresponding to Red (0% aligned)
         public static double END_GAME_PARK_WARNING_SEC = 5.0;  // Seconds before end of match (120s total) to trigger park warning light cycle
-        public static long PARK_WARNING_STROBE_MS = 70;        // Strobe color cycle step interval in ms for park alert
+        public static long PARK_WARNING_STROBE_MS = 70;        // Strobe color cycle step interval in ms for park
+
+        // ---------- Gate servo ----------
+        public static String SERVO_NAME = "servo"; // CHANGE to the actual Robot Configuration name
+
+        public static double SERVO_ANGLE_POS1_DEG = 0.0;
+        public static double SERVO_ANGLE_POS2_DEG = 90.0;
+
+        public static double SERVO_ANGLE_MIN_DEG = 0.0;
+        public static double SERVO_ANGLE_MAX_DEG = 180.0;
+
+        public static boolean REVERSE_SERVO = false;
+
+        public static double SERVO_SPEED_DEG_PER_SEC = 90.0;
+        public static double SERVO_RAMP_ACCEL_DEG_SEC2 = 180.0;
+        public static double SERVO_RAMP_DECEL_DISTANCE_DEG = 20.0;
 
         // ---------- Motor reversals (use RB + D-Pad test to check) ----------
         public static boolean REVERSE_FRONT_LEFT = true;

@@ -76,24 +76,28 @@ public class roberta extends LinearOpMode {
         // =====================================================================
 
         // ---------- Fast Two-Ball Load Detection ----------
-        public static boolean SHOOTER_TWO_BALL_BOOST_ENABLED = true;
-        public static double SHOOTER_TWO_BALL_BOOST_POWER = 1.00;
+        public static boolean SHOOTER_TWO_BALL_BOOST_ENABLED = false;
+        public static double SHOOTER_TWO_BALL_BOOST_POWER = 0.85;
 
-        // More sensitive detection thresholds
-        public static double SHOOTER_VELOCITY_DROP_FRACTION = 0.03;
-        public static double SHOOTER_CURRENT_RISE_AMPS = 0.15;
+        public static double SHOOTER_VELOCITY_DROP_FRACTION = 0.08;
+        public static double SHOOTER_CURRENT_RISE_AMPS = 0.5;
 
-        // Trigger immediately when a load is detected
-        public static long SHOOTER_DETECTION_HOLD_MS = 0;
+        public static long SHOOTER_DETECTION_HOLD_MS = 150;
 
         // Require the shooter to recover before counting another ball.
         public static double SHOOTER_VELOCITY_RECOVERY_FRACTION = 0.05;
         public static double SHOOTER_CURRENT_RECOVERY_AMPS = 0.2;
 
+
+
+
+
         // ---------- Shooter Motor Speeds & Mid-Shot Power Bump ----------
         public static boolean SHOOTER_ENABLED = true;          // Enable or disable shooter motor control loop
         public static boolean REVERSE_SHOOTER = false;         // Reverse shooter motor spinning direction
         public static double SHOOTER_BASE_POWER = 0.85;        // Base shooter motor power before mid-shot bump (85%)
+
+        public static double DRIVE_POWER_LIMIT = 0.85;
 
         public static boolean SHOOTER_BUMP_ENABLED = false;
         public static double SHOOTER_BUMP_POWER = 1.00;
@@ -280,6 +284,21 @@ public class roberta extends LinearOpMode {
     private DcMotor frontLeft, frontRight, backLeft, backRight;
     private DcMotor intake;
     private DcMotorEx shooter;
+    private Servo gate;
+
+    private double currentShooterPower = 0.0;
+
+    private long teleOpStartMs;
+
+    private double gateCurrentDegrees = 0.0;
+    private double gateTargetDegrees = 0.0;
+
+    private static final double GATE_POS_1 = 0.0;
+    private static final double GATE_POS_2 = 90.0;
+
+    private static final double GATE_SPEED = 90.0; // degrees per second
+    private static final double SERVO_MIN_DEGREES = 0.0;
+    private static final double SERVO_MAX_DEGREES = 180.0;
 
     private Servo customServo;
     private GoBildaPinpointDriver pinpoint;
@@ -306,7 +325,6 @@ public class roberta extends LinearOpMode {
 
     // ---------- Tuneable Shooter Ramping & Distance State ----------
     private long shooterRampStartMs = 0;
-    private double currentShooterPower = 0.0;
     private double latestTargetDistanceIn = 0.0;
 
     // ---------- Battery Voltage Throttling ----------
@@ -491,7 +509,7 @@ public class roberta extends LinearOpMode {
             handleButtons(now);
 
             runIntake();
-            runShooter(now);
+            runShooter(now, teleOpStartMs);
 
             boolean manualOverride = hasManualStickInput();
             if (manualOverride && (autoAlignActive || blobApproachActive)) {
@@ -523,7 +541,7 @@ public class roberta extends LinearOpMode {
         // ---------- SHUTDOWN ----------
         stopDrive();
         if (intake != null) intake.setPower(0.0);
-        if (shooter != null) shooter.setPower(0.0);
+        //if (shooter != null) shooter.setPower(0.0);
         if (limelight != null) limelight.stop();
         if (webcam != null) {
             webcam.stopStreaming();
@@ -811,7 +829,8 @@ public class roberta extends LinearOpMode {
                     ? DcMotor.Direction.REVERSE
                     : DcMotor.Direction.FORWARD);
             shooter.setZeroPowerBehavior(DcMotor.ZeroPowerBehavior.FLOAT);
-            shooter.setMode(DcMotor.RunMode.RUN_WITHOUT_ENCODER);
+            shooter.setVelocityPIDFCoefficients(100, 0, 0, 15);
+            shooter.setMode(DcMotor.RunMode.RUN_USING_ENCODER);
         } catch (Exception e) {
             shooter = null;
         }
@@ -1194,19 +1213,26 @@ public class roberta extends LinearOpMode {
         setMotorPowersDirect(fl, fr, bl, br);
     }
 
+
     private void setMotorPowersDirect(double fl, double fr, double bl, double br) {
         if (Config.REVERSE_FRONT_LEFT) fl = -fl;
         if (Config.REVERSE_FRONT_RIGHT) fr = -fr;
         if (Config.REVERSE_BACK_LEFT) bl = -bl;
         if (Config.REVERSE_BACK_RIGHT) br = -br;
 
-        double max = Math.max(1.0, Math.max(Math.max(Math.abs(fl), Math.abs(fr)),
-                Math.max(Math.abs(bl), Math.abs(br))));
-        if (frontLeft != null) frontLeft.setPower(fl / max);
-        if (frontRight != null) frontRight.setPower(fr / max);
-        if (backLeft != null) backLeft.setPower(bl / max);
-        if (backRight != null) backRight.setPower(br / max);
+        double max = Math.max(1.0, Math.max(
+                Math.max(Math.abs(fl), Math.abs(fr)),
+                Math.max(Math.abs(bl), Math.abs(br))
+        ));
+
+        double scale = Config.DRIVE_POWER_LIMIT / max;
+
+        if (frontLeft != null) frontLeft.setPower(fl * scale);
+        if (frontRight != null) frontRight.setPower(fr * scale);
+        if (backLeft != null) backLeft.setPower(bl * scale);
+        if (backRight != null) backRight.setPower(br * scale);
     }
+
 
     private void runIntake() {
         if (intake == null) return;
@@ -1222,113 +1248,46 @@ public class roberta extends LinearOpMode {
         }
     }
 
-    private void runShooter(long now) {
+
+    private void runShooter(long now, long teleOpStartMs) {
 
         if (shooter == null) return;
+
+        if (gamepad1.right_bumper) {
+            shooter.setVelocity(1800);
+        }
 
         boolean shooterOn = Config.SHOOTER_ENABLED
                 && gamepad1.right_trigger > Config.TRIGGER_THRESHOLD;
 
-        // Check for the simultaneous two-ball load.
         updateShooterBallDetection(now, shooterOn);
-
-        double targetPower = 0.0;
 
         if (shooterOn) {
 
-            if (shooterRampStartMs == 0) {
-                shooterRampStartMs = now;
+            double elapsedSec = (now - teleOpStartMs) / 1000.0;
+
+            double targetPower = 0.0;
+
+            if (elapsedSec < 60.0) {
+                targetPower = 0.80;
+            } else if (elapsedSec < 120.0) {
+                double rampProgress = (elapsedSec - 60.0) / 60.0;
+                targetPower = 0.80 + (0.07 * rampProgress);
+            } else {
+                targetPower = 0.87;
             }
 
-            // Normal shooter power: 85%.
-            double basePower = Config.SHOOTER_BASE_POWER;
+            currentShooterPower = targetPower;
 
-            // Optional Limelight distance-based power adjustment.
-            if (Config.SHOOTER_AUTO_SPEED_ENABLED && latestTargetDistanceIn > 0.0) {
-
-                double range = Math.max(
-                        0.1,
-                        Math.abs(Config.SHOOTER_FAR_DIST_IN - Config.SHOOTER_CLOSE_DIST_IN)
-                );
-
-                double t = (latestTargetDistanceIn - Config.SHOOTER_CLOSE_DIST_IN) / range;
-
-                double autoPower = Config.SHOOTER_CLOSE_POWER
-                        + t * (Config.SHOOTER_FAR_POWER - Config.SHOOTER_CLOSE_POWER);
-
-                basePower = clip(
-                        autoPower,
-                        Config.SHOOTER_MIN_POWER,
-                        Config.SHOOTER_MAX_POWER
-                );
-            }
-
-            double fullTargetPower = basePower;
-
-            // Optional legacy timed bump.
-            // This is ignored while the two-ball boost feature is enabled.
-            if (!Config.SHOOTER_TWO_BALL_BOOST_ENABLED
-                    && Config.SHOOTER_BUMP_ENABLED
-                    && !servoStatePos1
-                    && servoPos2StartMs > 0) {
-
-                long elapsedSinceActuation = now - servoPos2StartMs;
-
-                if (elapsedSinceActuation >= Config.SHOOTER_BUMP_DELAY_MS
-                        && (Config.SHOOTER_BUMP_DURATION_MS <= 0
-                        || elapsedSinceActuation < Config.SHOOTER_BUMP_DELAY_MS
-                        + Config.SHOOTER_BUMP_DURATION_MS)) {
-
-                    fullTargetPower = Config.SHOOTER_BUMP_POWER;
-                }
-            }
-
-            // Optional battery voltage compensation.
-            if (Config.SHOOTER_VOLTAGE_COMP_ENABLED) {
-
-                double volts = getBatteryVoltage(now);
-
-                if (volts > 8.0) {
-
-                    double compFactor = Config.NOMINAL_BATTERY_VOLTAGE / volts;
-
-                    fullTargetPower = clip(
-                            fullTargetPower * compFactor,
-                            0.0,
-                            Config.SHOOTER_MAX_POWER
-                    );
-                }
-            }
-
-            // Normal startup ramp.
-            double rampFrac = Config.SHOOTER_RAMP_UP_MS > 0
-                    ? clip(
-                    (double) (now - shooterRampStartMs)
-                            / Config.SHOOTER_RAMP_UP_MS,
-                    0.0,
-                    1.0
-            )
-                    : 1.0;
-
-            targetPower = fullTargetPower * rampFrac;
-
-            // IMPORTANT:
-            // Once the simultaneous two-ball load is detected,
-            // override the other settings and command 100% power.
-            if (Config.SHOOTER_TWO_BALL_BOOST_ENABLED && twoBallLoadDetected) {
-                targetPower = 1.00;
-            }
+            shooter.setVelocity(1850);
 
         } else {
-            shooterRampStartMs = 0;
-        }
 
-        // Only send a new motor command when power changes.
-        if (Math.abs(targetPower - currentShooterPower) >= 0.001) {
-            currentShooterPower = targetPower;
-            shooter.setPower(currentShooterPower);
+            currentShooterPower = 0.0;
+            shooter.setPower(0.0);
         }
     }
+
 
 
     private void stopDrive() {
