@@ -63,7 +63,7 @@ import java.util.concurrent.TimeUnit;
  * velocity-lead yaw correction.
  */
 
-@TeleOp(name = "BIOBUZZ ROBERTA", group = "BIOBUZZ")
+@TeleOp(name = "ROBERTA", group = "Tele-Op")
 public class roberta extends LinearOpMode {
 
     @com.acmerobotics.dashboard.config.Config
