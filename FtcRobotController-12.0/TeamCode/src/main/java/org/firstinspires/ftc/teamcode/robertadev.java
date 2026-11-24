@@ -9,6 +9,7 @@ import com.qualcomm.hardware.limelightvision.Limelight3A;
 import com.qualcomm.robotcore.eventloop.opmode.LinearOpMode;
 import com.qualcomm.robotcore.eventloop.opmode.TeleOp;
 import com.qualcomm.robotcore.hardware.DcMotor;
+import com.qualcomm.robotcore.hardware.DcMotorEx;
 import com.qualcomm.robotcore.hardware.Servo;
 import com.qualcomm.robotcore.hardware.VoltageSensor;
 
@@ -46,7 +47,8 @@ import java.util.concurrent.TimeUnit;
  * PS5 DualSense / FTC Gamepad 1 controls (standard FTC button fields):
  *  - Left stick: field-centric mecanum forward/back and strafe
  *  - Right stick X: robot rotation
- *  - Releasing the left stick engages Pinpoint X/Y position hold; right-stick rotation remains available
+ *  - Releasing the left stick engages Pinpoint X/Y position hold (+ heading hold when the right
+ *    stick is also released); right-stick rotation remains available and re-targets the heading
  *  - Any left-stick translation input immediately releases position hold
  *  - Position hold is bypassed while AprilTag alignment or ball approach is active
  *  - Cross (A): combined AprilTag approach + yaw alignment; press again to cancel
@@ -60,10 +62,20 @@ import java.util.concurrent.TimeUnit;
  *  - R2: shooter ON (with optional distance-based power)
  *  - D-pad Up / Down (without R1): feeder servo position 1 / position 2
  *
- * Retains BASE's mecanum drive, Pinpoint field-centric behavior, ball detection/approach,
- * and AprilTag positional approach. Adds MainDev's shooter, feeder servo, battery
- * compensation, advanced Limelight filtering, distance-based shooter power, and
- * velocity-lead yaw correction.
+ * ---------------------------------------------------------------------------------------
+ * POSITION HOLD TUNING GUIDE (all values live in Config section 2B, editable in FTC Dashboard)
+ *  1. Measure and enter PINPOINT_X/Y_POD_OFFSET_MM (section 7). Wrong offsets make a rotation
+ *     look like translation, which is the classic "runs away when pushed hard" cause.
+ *  2. Leave HOLD_HEADING_ENABLED = true so a push cannot spin the robot.
+ *  3. Open Dashboard graph: hold_err_in, hold_speed_ips, hold_heading_err_deg.
+ *  4. Push the robot, release, and watch it settle:
+ *       - Overshoots / bounces  -> raise HOLD_VELOCITY_KD, or lower HOLD_POSITION_KP / HOLD_MAX_POWER
+ *       - Too soft / sags       -> raise HOLD_POSITION_KP
+ *       - Chatters at rest      -> raise HOLD_POSITION_TOLERANCE_IN or lower HOLD_MIN_POWER
+ *       - Everything scaled     -> HOLD_AGGRESSION (one knob, 0.25-2.5)
+ *  5. HOLD_MAX_ERROR_IN is a safety net: if the robot gets pushed farther than this (or odometry
+ *     glitches), the hold re-captures the new position instead of chasing the old one.
+ * ---------------------------------------------------------------------------------------
  */
 
 @TeleOp(name = "ROBERTA DEV", group = "Tele-Op")
@@ -75,25 +87,40 @@ public class robertadev extends LinearOpMode {
         // 1. SHOOTER & FEEDER SUBSYSTEM (MOST FREQUENTLY TUNED)
         // =====================================================================
 
-        // ---------- Shooter Motor Speeds & Mid-Shot Power Bump ----------
+        // ---------- Shooter Motor Speeds & Mid-Shot Velocity Bump ----------
         public static boolean SHOOTER_ENABLED = true;          // Enable or disable shooter motor control loop
         public static boolean REVERSE_SHOOTER = false;         // Reverse shooter motor spinning direction
-        public static double SHOOTER_BASE_POWER = 0.85;        // Base shooter motor power before mid-shot bump (85%)
-        public static double SHOOTER_BUMP_POWER = 1.00;        // Bumped shooter motor power mid-shot (95%)
-        public static boolean SHOOTER_BUMP_ENABLED = true;     // Enable shooter power bump mid-shot
-        public static long SHOOTER_BUMP_DELAY_MS = 200;        // Timed delay in ms after servo actuates (Pos 2) before bumping power
-        public static long SHOOTER_BUMP_DURATION_MS = 500;     // Duration in ms to hold power bump (0 = hold while servo is extended)
-        public static double SHOOTER_TARGET_POWER = 0.85;      // Target motor power fallback / legacy alias
-        public static long SHOOTER_RAMP_UP_MS = 0;             // Power ramp-up duration in milliseconds (0 = instant speed)
+        public static double SHOOTER_BASE_VELOCITY = 1900.0;   // Base target shooter velocity in encoder ticks/sec
+        public static double SHOOTER_BUMP_VELOCITY = 2000.0;   // Bumped target shooter velocity mid-shot (ticks/sec)
+        public static boolean SHOOTER_BUMP_ENABLED = false;     // Enable shooter velocity bump mid-shot
+        public static long SHOOTER_BUMP_DELAY_MS = 200;        // Timed delay in ms after servo actuates (Pos 2) before bumping velocity
+        public static long SHOOTER_BUMP_DURATION_MS = 500;     // Duration in ms to hold velocity bump (0 = hold while servo is extended)
+        public static double SHOOTER_TARGET_VELOCITY = 1850.0; // Target motor velocity fallback / alias (ticks/sec)
+        public static long SHOOTER_RAMP_UP_MS = 0;             // Velocity ramp-up duration in milliseconds (0 = instant speed)
 
-        // ---------- Auto Shooter Distance-Speed Calibration ----------
-        public static boolean SHOOTER_AUTO_SPEED_ENABLED = false; // Auto-adjust shooter power based on Limelight target distance
+        // ---------- Shooter PIDF Velocity Loop Tuning (FTC Dashboard) ----------
+        public static double SHOOTER_PIDF_P = 100.0;           // Proportional gain P for shooter velocity loop
+        public static double SHOOTER_PIDF_I = 0.0;             // Integral gain I for shooter velocity loop
+        public static double SHOOTER_PIDF_D = 0.0;             // Derivative gain D for shooter velocity loop
+        public static double SHOOTER_PIDF_F = 15.0;            // Feedforward gain F for shooter velocity loop
+
+        // ---------- Auto Shooter Distance-Speed Velocity Calibration ----------
+        public static boolean SHOOTER_AUTO_SPEED_ENABLED = false; // Auto-adjust shooter velocity based on Limelight target distance
         public static double SHOOTER_CLOSE_DIST_IN = 36.0;        // Close calibration distance in inches (e.g. 3 feet)
-        public static double SHOOTER_CLOSE_POWER = 0.80;          // Shooter motor power at close distance (e.g. 60%)
+        public static double SHOOTER_CLOSE_VELOCITY = 1600.0;     // Shooter velocity in ticks/sec at close distance
         public static double SHOOTER_FAR_DIST_IN = 120.0;         // Far calibration distance in inches (e.g. 10 feet)
-        public static double SHOOTER_FAR_POWER = 1.00;            // Shooter motor power at far distance (e.g. 100%)
-        public static double SHOOTER_MIN_POWER = 0.80;            // Minimum clamped shooter power limit
-        public static double SHOOTER_MAX_POWER = 1.00;            // Maximum clamped shooter power limit
+        public static double SHOOTER_FAR_VELOCITY = 2200.0;       // Shooter velocity in ticks/sec at far distance
+        public static double SHOOTER_MIN_VELOCITY = 1200.0;       // Minimum clamped shooter velocity limit (ticks/sec)
+        public static double SHOOTER_MAX_VELOCITY = 2500.0;       // Maximum clamped shooter velocity limit (ticks/sec)
+
+        // ---------- Legacy Power Aliases (Backward Compatibility) ----------
+        public static double SHOOTER_BASE_POWER = 0.85;
+        public static double SHOOTER_BUMP_POWER = 1.00;
+        public static double SHOOTER_CLOSE_POWER = 0.80;
+        public static double SHOOTER_FAR_POWER = 1.00;
+        public static double SHOOTER_MIN_POWER = 0.80;
+        public static double SHOOTER_MAX_POWER = 1.00;
+        public static double SHOOTER_TARGET_POWER = 0.85;
 
         // ---------- Shooter Battery Voltage Compensation ----------
         public static boolean SHOOTER_VOLTAGE_COMP_ENABLED = false; // Automatic voltage compensation to maintain constant RPM under voltage sags
@@ -107,7 +134,7 @@ public class robertadev extends LinearOpMode {
         public static double SERVO_ANGLE_MIN_DEG = 0.0;       // Physical minimum mechanical angle of servo in degrees (maps to 0.0 position)
         public static double SERVO_ANGLE_MAX_DEG = 180.0;     // Physical maximum mechanical angle of servo in degrees (maps to 1.0 position)
         public static double SERVO_SPEED_DEG_PER_SEC = 0.0;   // Maximum speed limit in degrees per second (0 = instant hardware max speed)
-        public static double SERVO_RAMP_ACCEL_DEG_SEC2 = 0.0;  // Acceleration limit in deg/sec² for smooth speed ramping (0 = instant speed change)
+        public static double SERVO_RAMP_ACCEL_DEG_SEC2 = 0.0;  // Acceleration limit in deg/sec^2 for smooth speed ramping (0 = instant speed change)
         public static double SERVO_RAMP_DECEL_DISTANCE_DEG = 0.0; // Distance in degrees to begin decelerating smoothly near target angle (0 = no decel ramp)
         public static boolean SERVO_AUTO_TIMER_ENABLED = true;// True = automatically return servo to Position 1 after holding Position 2
         public static long SERVO_TIMER_HOLD_MS = 2500;        // Hold duration in milliseconds at Position 2 before auto-returning to Position 1 (0 = disabled)
@@ -119,6 +146,42 @@ public class robertadev extends LinearOpMode {
         public static double INTAKE_IN_POWER = 0.8;           // Motor power when pulling items IN (Left Trigger)
         public static double INTAKE_OUT_POWER = 0.9;          // Motor power when ejecting items OUT (Left Bumper)
         public static double TRIGGER_THRESHOLD = 0.1;         // Trigger threshold to activate intake / shooter
+
+        // =====================================================================
+        // 2B. POSITION HOLD (ODOMETRY TRANSLATION BRAKE) - TUNE THESE FIRST
+        // =====================================================================
+        // Captures Pinpoint X/Y when the left stick is released. Right stick still rotates.
+        // See the tuning guide at the top of this file.
+
+        // ---------- Master switches ----------
+        public static boolean TRANSLATION_HOLD_ENABLED = true;   // Master on/off for position hold
+        public static boolean HOLD_HEADING_ENABLED = true;       // Also hold heading while hold is active so pushes can't spin the robot
+        public static boolean HOLD_USE_PINPOINT_VELOCITY = true; // True = Pinpoint's own velocity (fast, no lag); False = derive from position deltas (old behaviour)
+        public static boolean HOLD_RUNAWAY_GUARD_ENABLED = true; // Re-capture position if pushed/glitched farther than HOLD_MAX_ERROR_IN
+
+        // ---------- One-knob tuning ----------
+        public static double HOLD_AGGRESSION = 1.00;             // Overall strength multiplier for translation hold (0.25-2.5)
+
+        // ---------- Translation controller (per field axis) ----------
+        public static double HOLD_POSITION_KP = 0.12;            // Power per inch of position error (raise if it sags, lower if it overshoots)
+        public static double HOLD_VELOCITY_KD = 0.045;           // Power per inch/sec of velocity (damping/braking; raise to stop overshoot)
+        public static double HOLD_MAX_POWER = 0.35;              // Max correction power per axis (lower = gentler, less overshoot)
+        public static double HOLD_MIN_POWER = 0.04;              // Min push to beat friction when moving TOWARD target (not applied while braking)
+        public static double HOLD_POSITION_TOLERANCE_IN = 0.20;  // Dead zone in position (inches)
+        public static double HOLD_VELOCITY_TOLERANCE_IPS = 0.75; // Dead zone in speed (in/sec) inside the position tolerance
+        public static double HOLD_VELOCITY_FILTER_ALPHA = 0.45;  // Only used when HOLD_USE_PINPOINT_VELOCITY = false (0-1; higher = faster)
+
+        // ---------- Heading hold while position hold is active ----------
+        public static double HOLD_HEADING_KP = 0.015;            // Turn power per degree of heading error
+        public static double HOLD_HEADING_MAX_TURN = 0.30;       // Max turn power from heading hold
+        public static double HOLD_HEADING_TOLERANCE_DEG = 1.0;   // Ignore heading error smaller than this
+        public static boolean HOLD_HEADING_REVERSE = false;      // Flip if heading hold pushes the robot AWAY from its target heading
+
+        // ---------- Safety net ----------
+        public static double HOLD_MAX_ERROR_IN = 18.0;           // Pushed farther than this (inches) -> accept new spot as target
+
+        // ---------- Debug ----------
+        public static boolean HOLD_DEBUG_TELEMETRY = true;       // Show hold error/speed/heading numbers (graphable in Dashboard)
 
         // =====================================================================
         // 3. VISION & AUTO-AIM SUBSYSTEM (LIMELIGHT 3A & APRILTAGS)
@@ -220,18 +283,6 @@ public class robertadev extends LinearOpMode {
         public static boolean REVERSE_BACK_LEFT = true;        // Flip rotation direction of Back Left drive motor
         public static boolean REVERSE_BACK_RIGHT = false;      // Flip rotation direction of Back Right drive motor
 
-        // ---------- Odometry-Based Translation Brake / Position Hold ----------
-        // Automatically captures Pinpoint X/Y when translation controls are released.
-        // Rotation remains available; only the two translation axes are held.
-        public static boolean TRANSLATION_HOLD_ENABLED = true;
-        public static double HOLD_AGGRESSION = 1.00;             // Overall controller strength multiplier (0.25-2.5 is a useful tuning range)
-        public static double HOLD_POSITION_KP = 0.12;            // Power per inch of field-position error
-        public static double HOLD_VELOCITY_KD = 0.025;            // Power per inch/sec of measured field velocity (dynamic braking)
-        public static double HOLD_MAX_POWER = 0.45;               // Maximum correction power per translation axis
-        public static double HOLD_MIN_POWER = 0.06;               // Minimum correction to overcome mecanum roller / drivetrain friction
-        public static double HOLD_POSITION_TOLERANCE_IN = 0.20;   // Ignore tiny position errors when nearly stationary
-        public static double HOLD_VELOCITY_TOLERANCE_IPS = 0.75;  // Ignore low-speed odometry noise inside position tolerance
-        public static double HOLD_VELOCITY_FILTER_ALPHA = 0.45;   // Low-pass filter for position-derived velocity (0-1; higher reacts faster)
 
         // =====================================================================
         // 6. MATCH SETUP & INITIAL ROBOT POSE
@@ -244,8 +295,8 @@ public class robertadev extends LinearOpMode {
         // =====================================================================
         // 7. PINPOINT ODOMETRY & MISC HARDWARE
         // =====================================================================
-        // Set these to the measured pod positions relative to robot center; correct offsets are
-        // especially important for keeping the robot center fixed while rotating under hold.
+        // MEASURE THESE. Wrong pod offsets make rotation look like X/Y movement, which can make the
+        // position hold run away when the robot is pushed hard enough to spin.
         public static double PINPOINT_X_POD_OFFSET_MM = 0.0; // X pod sideways offset from robot center (mm; left is positive)
         public static double PINPOINT_Y_POD_OFFSET_MM = 0.0; // Y pod forward offset from robot center (mm; forward is positive)
         public static boolean REVERSE_X_ENCODER = false;       // Reverse X pod encoder counting direction
@@ -278,7 +329,7 @@ public class robertadev extends LinearOpMode {
     // ---------- Hardware Devices ----------
     private DcMotor frontLeft, frontRight, backLeft, backRight;
     private DcMotor intake;
-    private DcMotor shooter;
+    private DcMotorEx shooter;
     private Servo customServo;
     private GoBildaPinpointDriver pinpoint;
     private Limelight3A limelight;
@@ -304,6 +355,7 @@ public class robertadev extends LinearOpMode {
 
     // ---------- Tuneable Shooter Ramping & Distance State ----------
     private long shooterRampStartMs = 0;
+    private double currentShooterVelocity = 0.0;
     private double currentShooterPower = 0.0;
     private double latestTargetDistanceIn = 0.0;
 
@@ -352,6 +404,10 @@ public class robertadev extends LinearOpMode {
     private double translationHoldErrorYIn = 0.0;
     private double translationHoldPowerX = 0.0;
     private double translationHoldPowerY = 0.0;
+    private double holdHeadingTargetDeg = 0.0;
+    private double holdHeadingErrorDeg = 0.0;
+    private double holdHeadingTurnPower = 0.0;
+    private int holdRecaptureCount = 0;
 
     private double lastXOffset = Double.NaN, lastYOffset = Double.NaN;
     private boolean lastXEncoderRev = false, lastYEncoderRev = false;
@@ -565,7 +621,7 @@ public class robertadev extends LinearOpMode {
 
     /**
      * Updates indicator light during INIT phase:
-     * - Displays selected alliance color (Solid Red or Solid Blue) for a short period (1500ms)
+     * - Displays selected alliance color (Solid Red or Solid Blue) for a short period
      *   whenever alliance selection is initialized or toggled.
      * - Otherwise, displays a quick blinking blue color.
      */
@@ -573,11 +629,9 @@ public class robertadev extends LinearOpMode {
         if (rgbLight == null) return;
 
         if (now - allianceShowStartMs < Config.ALLIANCE_SHOW_DURATION_MS) {
-            // Display alliance color for visual confirmation to drive team
             double allianceColor = Config.RED_ALLIANCE ? COLOR_RED_POS : COLOR_BLUE_POS;
             setIndicatorLightPosition(allianceColor);
         } else {
-            // Quick blinking solid blue
             boolean blinkOn = ((now / Config.INIT_BLINK_INTERVAL_MS) % 2) == 0;
             double blueColor = Config.RGB_LIGHT_POSITION > 0 ? Config.RGB_LIGHT_POSITION : COLOR_BLUE_POS;
             setIndicatorLightPosition(blinkOn ? blueColor : COLOR_OFF_POS);
@@ -586,14 +640,14 @@ public class robertadev extends LinearOpMode {
 
     /**
      * Updates indicator light during TeleOp phase:
-     * 1. At set time before end of match (5 seconds): eyecatching rapid color cycle to alert driver to park.
+     * 1. At set time before end of match: eyecatching rapid color cycle to alert driver to park.
      * 2. Auto-align active: smooth transition from Red (0% aligned) through Orange/Yellow to Green (100% aligned).
      * 3. Otherwise: blinks solid blue color.
      */
     private void updateTeleOpIndicatorLight(long now, double matchTimeRemainingSec, TagView tagView) {
         if (rgbLight == null) return;
 
-        // 1. End of match park alert (final N seconds of match)
+        // 1. End of match park alert
         if (matchTimeRemainingSec <= Config.END_GAME_PARK_WARNING_SEC && matchTimeRemainingSec >= -10.0) {
             int colorIndex = (int) ((now / Config.PARK_WARNING_STROBE_MS) % PARK_WARNING_COLORS.length);
             setIndicatorLightPosition(PARK_WARNING_COLORS[colorIndex]);
@@ -604,7 +658,6 @@ public class robertadev extends LinearOpMode {
         if (autoAlignActive) {
             double progress = 0.0;
             if (tagView != null && alignTagSeen) {
-                // Determine current yaw alignment error (including velocity lead aim offset)
                 double strafeVelIPS = 0.0;
                 if (pinpoint != null) {
                     strafeVelIPS = pinpoint.getVelY(DistanceUnit.INCH);
@@ -624,12 +677,8 @@ public class robertadev extends LinearOpMode {
 
                 // 0.0 when error >= maxErr (Red), 1.0 when error <= minErr (Green)
                 progress = 1.0 - clip((effectiveYawErrDeg - minErr) / (maxErr - minErr), 0.0, 1.0);
-            } else {
-                // Auto-align active but tag not seen yet -> Red (0% progress)
-                progress = 0.0;
             }
 
-            // Smooth interpolation from Red (0.277) to Green (0.500)
             double alignColorPos = COLOR_RED_POS + progress * (COLOR_GREEN_POS - COLOR_RED_POS);
             setIndicatorLightPosition(alignColorPos);
             return;
@@ -699,10 +748,11 @@ public class robertadev extends LinearOpMode {
         }
 
         try {
-            shooter = hardwareMap.get(DcMotor.class, Config.SHOOTER_NAME);
+            shooter = hardwareMap.get(DcMotorEx.class, Config.SHOOTER_NAME);
             shooter.setDirection(Config.REVERSE_SHOOTER ? DcMotor.Direction.REVERSE : DcMotor.Direction.FORWARD);
             shooter.setZeroPowerBehavior(DcMotor.ZeroPowerBehavior.FLOAT);
-            shooter.setMode(DcMotor.RunMode.RUN_WITHOUT_ENCODER);
+            shooter.setMode(DcMotor.RunMode.RUN_USING_ENCODER);
+            shooter.setVelocityPIDFCoefficients(Config.SHOOTER_PIDF_P, Config.SHOOTER_PIDF_I, Config.SHOOTER_PIDF_D, Config.SHOOTER_PIDF_F);
         } catch (Exception e) {
             shooter = null;
         }
@@ -847,7 +897,6 @@ public class robertadev extends LinearOpMode {
             currentServoAngleDeg = targetServoAngleDeg;
             currentServoVelocityDegPerSec = 0.0;
         } else {
-            // Calculate top allowable speed for this frame based on deceleration distance ramp
             double maxSpeed = Config.SERVO_SPEED_DEG_PER_SEC;
 
             // Deceleration ramp: smooth slowdown as servo approaches target angle
@@ -868,7 +917,6 @@ public class robertadev extends LinearOpMode {
                 currentServoVelocityDegPerSec = maxSpeed;
             }
 
-            // Step angle by current velocity
             double angleStep = currentServoVelocityDegPerSec * dtSec;
             if (angleStep >= distanceRemaining) {
                 currentServoAngleDeg = targetServoAngleDeg;
@@ -1064,12 +1112,14 @@ public class robertadev extends LinearOpMode {
     }
 
     /**
-     * Actively holds the robot's Pinpoint X/Y position while leaving heading free.
+     * Actively holds the robot's Pinpoint X/Y position, and (optionally) its heading.
      *
-     * Pinpoint position deltas are used to estimate field-frame velocity. The controller
-     * combines position correction (P) with velocity damping (D), so it first brakes motion
-     * and then pushes back against outside forces. It is intentionally bypassed during both
-     * vision assists; those routines retain full control of their own movement axes.
+     * Improvements over the original:
+     *  - Heading is held while the driver isn't turning, so a hard push can't spin the robot
+     *    (rotation with imperfect pod offsets looks like fake X/Y motion and causes runaway).
+     *  - Velocity damping uses Pinpoint's own velocity (no differentiation/filter lag).
+     *  - A runaway guard re-captures the target if the error gets larger than HOLD_MAX_ERROR_IN.
+     *  - The minimum-power floor is no longer applied while braking, which removes chatter.
      */
     private void runTranslationHold(double robotHeadingDeg, double turn, long now) {
         if (!Config.TRANSLATION_HOLD_ENABLED || pinpoint == null) {
@@ -1083,37 +1133,24 @@ public class robertadev extends LinearOpMode {
         double currentY = pinpoint.getPosY(DistanceUnit.INCH);
 
         if (!translationHoldActive) {
-            // Capture once on the transition from driver translation to no translation input.
-            translationHoldActive = true;
-            translationHoldTargetXIn = currentX;
-            translationHoldTargetYIn = currentY;
-            translationHoldLastXIn = currentX;
-            translationHoldLastYIn = currentY;
-            translationHoldLastUpdateMs = now;
-            translationHoldVelocityXIPS = 0.0;
-            translationHoldVelocityYIPS = 0.0;
+            captureTranslationHold(currentX, currentY, robotHeadingDeg, now);
         } else {
-            long elapsedMs = now - translationHoldLastUpdateMs;
-            if (elapsedMs > 0 && elapsedMs <= 250) {
-                double dtSec = elapsedMs / 1000.0;
-                double rawVelocityX = clip((currentX - translationHoldLastXIn) / dtSec, -100.0, 100.0);
-                double rawVelocityY = clip((currentY - translationHoldLastYIn) / dtSec, -100.0, 100.0);
-                double alpha = clip(Config.HOLD_VELOCITY_FILTER_ALPHA, 0.01, 1.0);
-                translationHoldVelocityXIPS += alpha * (rawVelocityX - translationHoldVelocityXIPS);
-                translationHoldVelocityYIPS += alpha * (rawVelocityY - translationHoldVelocityYIPS);
-            } else if (elapsedMs > 250) {
-                // Do not derive a large velocity spike after a delayed OpMode loop.
-                translationHoldVelocityXIPS = 0.0;
-                translationHoldVelocityYIPS = 0.0;
-            }
-
-            translationHoldLastXIn = currentX;
-            translationHoldLastYIn = currentY;
-            translationHoldLastUpdateMs = now;
+            updateHoldVelocity(currentX, currentY, now);
         }
 
         translationHoldErrorXIn = translationHoldTargetXIn - currentX;
         translationHoldErrorYIn = translationHoldTargetYIn - currentY;
+
+        // Runaway guard: if the robot was shoved (or odometry glitched) farther than the limit,
+        // accept the new spot instead of chasing the old one across the field.
+        if (Config.HOLD_RUNAWAY_GUARD_ENABLED
+                && Math.hypot(translationHoldErrorXIn, translationHoldErrorYIn) > Math.max(1.0, Config.HOLD_MAX_ERROR_IN)) {
+            captureTranslationHold(currentX, currentY, robotHeadingDeg, now);
+            translationHoldErrorXIn = 0.0;
+            translationHoldErrorYIn = 0.0;
+            holdRecaptureCount++;
+        }
+
         translationHoldPowerX = calculateTranslationHoldPower(
                 translationHoldErrorXIn, translationHoldVelocityXIPS);
         translationHoldPowerY = calculateTranslationHoldPower(
@@ -1142,7 +1179,68 @@ public class robertadev extends LinearOpMode {
         }
         if (Config.REVERSE_DRIVE_FORWARD) holdForward = -holdForward;
 
-        setRobotDriveTranslationPriority(holdForward, holdStrafeRight, turn);
+        // Heading hold: follow the driver while they rotate, resist pushes when they don't.
+        double holdTurn = turn;
+        holdHeadingErrorDeg = 0.0;
+        holdHeadingTurnPower = 0.0;
+        if (Config.HOLD_HEADING_ENABLED) {
+            if (Math.abs(turn) > 0.0) {
+                holdHeadingTargetDeg = robotHeadingDeg;
+            } else {
+                holdHeadingErrorDeg = normalizeDegrees(holdHeadingTargetDeg - robotHeadingDeg);
+                if (Math.abs(holdHeadingErrorDeg) > Config.HOLD_HEADING_TOLERANCE_DEG) {
+                    double sign = Config.HOLD_HEADING_REVERSE ? 1.0 : -1.0; // same sign convention as ball-approach heading hold
+                    double maxTurn = clip(Config.HOLD_HEADING_MAX_TURN, 0.0, 1.0);
+                    holdHeadingTurnPower = clip(sign * holdHeadingErrorDeg * Config.HOLD_HEADING_KP, -maxTurn, maxTurn);
+                }
+                holdTurn = holdHeadingTurnPower;
+            }
+        }
+
+        setRobotDriveTranslationPriority(holdForward, holdStrafeRight, holdTurn);
+    }
+
+    /** Latches the current pose as the hold target and seeds velocity so damping works immediately. */
+    private void captureTranslationHold(double currentX, double currentY, double robotHeadingDeg, long now) {
+        translationHoldActive = true;
+        translationHoldTargetXIn = currentX;
+        translationHoldTargetYIn = currentY;
+        translationHoldLastXIn = currentX;
+        translationHoldLastYIn = currentY;
+        translationHoldLastUpdateMs = now;
+        holdHeadingTargetDeg = robotHeadingDeg;
+        if (Config.HOLD_USE_PINPOINT_VELOCITY && pinpoint != null) {
+            translationHoldVelocityXIPS = pinpoint.getVelX(DistanceUnit.INCH);
+            translationHoldVelocityYIPS = pinpoint.getVelY(DistanceUnit.INCH);
+        } else {
+            translationHoldVelocityXIPS = 0.0;
+            translationHoldVelocityYIPS = 0.0;
+        }
+    }
+
+    /** Updates the field-frame velocity estimate used for damping. */
+    private void updateHoldVelocity(double currentX, double currentY, long now) {
+        if (Config.HOLD_USE_PINPOINT_VELOCITY && pinpoint != null) {
+            translationHoldVelocityXIPS = pinpoint.getVelX(DistanceUnit.INCH);
+            translationHoldVelocityYIPS = pinpoint.getVelY(DistanceUnit.INCH);
+        } else {
+            long elapsedMs = now - translationHoldLastUpdateMs;
+            if (elapsedMs > 0 && elapsedMs <= 250) {
+                double dtSec = elapsedMs / 1000.0;
+                double rawVelocityX = clip((currentX - translationHoldLastXIn) / dtSec, -100.0, 100.0);
+                double rawVelocityY = clip((currentY - translationHoldLastYIn) / dtSec, -100.0, 100.0);
+                double alpha = clip(Config.HOLD_VELOCITY_FILTER_ALPHA, 0.01, 1.0);
+                translationHoldVelocityXIPS += alpha * (rawVelocityX - translationHoldVelocityXIPS);
+                translationHoldVelocityYIPS += alpha * (rawVelocityY - translationHoldVelocityYIPS);
+            } else if (elapsedMs > 250) {
+                // Do not derive a large velocity spike after a delayed OpMode loop.
+                translationHoldVelocityXIPS = 0.0;
+                translationHoldVelocityYIPS = 0.0;
+            }
+        }
+        translationHoldLastXIn = currentX;
+        translationHoldLastYIn = currentY;
+        translationHoldLastUpdateMs = now;
     }
 
     /**
@@ -1205,14 +1303,17 @@ public class robertadev extends LinearOpMode {
         double maxPower = clip(Config.HOLD_MAX_POWER, 0.01, 1.0);
         double minPower = clip(Config.HOLD_MIN_POWER, 0.0, maxPower);
 
-        // Positive error commands motion toward the target; velocity feedback opposes drift.
+        // Positive error commands motion toward the target; velocity feedback opposes motion.
         double output = aggression * (positionErrorIn * Math.max(0.0, Config.HOLD_POSITION_KP)
                 - velocityIPS * Math.max(0.0, Config.HOLD_VELOCITY_KD));
         output = clip(output, -maxPower, maxPower);
 
-        // Mecanum rollers and drivetrain friction can absorb very small commands. Apply a
-        // configurable minimum only when an actual correction is needed (not at rest).
-        if (Math.abs(output) > 0.001 && Math.abs(output) < minPower) {
+        // Mecanum rollers and drivetrain friction can absorb very small commands. Apply the
+        // minimum only when the command is pushing TOWARD the target (same sign as the error).
+        // While braking (output opposes the error) a minimum would just cause chatter.
+        boolean towardTarget = Math.abs(positionErrorIn) > positionTolerance
+                && Math.signum(output) == Math.signum(positionErrorIn);
+        if (towardTarget && Math.abs(output) > 0.001 && Math.abs(output) < minPower) {
             output = Math.copySign(minPower, output);
         }
         return output;
@@ -1228,6 +1329,8 @@ public class robertadev extends LinearOpMode {
         translationHoldErrorYIn = 0.0;
         translationHoldPowerX = 0.0;
         translationHoldPowerY = 0.0;
+        holdHeadingErrorDeg = 0.0;
+        holdHeadingTurnPower = 0.0;
     }
 
     private void setRobotDrive(double forward, double strafeRight, double turn) {
@@ -1279,57 +1382,58 @@ public class robertadev extends LinearOpMode {
 
     private void runShooter(long now) {
         if (shooter == null) return;
-        double targetPower = 0.0;
+        double targetVelocity = 0.0;
         if (Config.SHOOTER_ENABLED && gamepad1.right_trigger > Config.TRIGGER_THRESHOLD) {
             if (shooterRampStartMs == 0) {
                 shooterRampStartMs = now;
             }
 
-            // Start with base speed (85% or distance-based auto speed)
-            double basePower = Config.SHOOTER_BASE_POWER;
+            // Start with base target velocity (or distance-based auto velocity)
+            double baseVelocity = Config.SHOOTER_BASE_VELOCITY;
             if (Config.SHOOTER_AUTO_SPEED_ENABLED && latestTargetDistanceIn > 0.0) {
                 double range = Math.max(0.1, Math.abs(Config.SHOOTER_FAR_DIST_IN - Config.SHOOTER_CLOSE_DIST_IN));
                 double t = (latestTargetDistanceIn - Config.SHOOTER_CLOSE_DIST_IN) / range;
-                double autoPower = Config.SHOOTER_CLOSE_POWER + t * (Config.SHOOTER_FAR_POWER - Config.SHOOTER_CLOSE_POWER);
-                basePower = clip(autoPower, Config.SHOOTER_MIN_POWER, Config.SHOOTER_MAX_POWER);
+                double autoVelocity = Config.SHOOTER_CLOSE_VELOCITY + t * (Config.SHOOTER_FAR_VELOCITY - Config.SHOOTER_CLOSE_VELOCITY);
+                baseVelocity = clip(autoVelocity, Config.SHOOTER_MIN_VELOCITY, Config.SHOOTER_MAX_VELOCITY);
             }
 
-            double fullTargetPower = basePower;
+            double fullTargetVelocity = baseVelocity;
 
-            // Mid-shot power bump logic: check if servo is actuated (Pos 2) and bump delay has elapsed
+            // Mid-shot velocity bump logic: check if servo is actuated (Pos 2) and bump delay has elapsed
             if (Config.SHOOTER_BUMP_ENABLED && !servoStatePos1 && servoPos2StartMs > 0) {
                 long elapsedSinceActuation = now - servoPos2StartMs;
                 if (elapsedSinceActuation >= Config.SHOOTER_BUMP_DELAY_MS &&
                         (Config.SHOOTER_BUMP_DURATION_MS <= 0 || elapsedSinceActuation < (Config.SHOOTER_BUMP_DELAY_MS + Config.SHOOTER_BUMP_DURATION_MS))) {
                     if (Config.SHOOTER_AUTO_SPEED_ENABLED && latestTargetDistanceIn > 0.0) {
-                        double bumpDelta = Config.SHOOTER_BUMP_POWER - Config.SHOOTER_BASE_POWER;
-                        fullTargetPower = clip(basePower + bumpDelta, Config.SHOOTER_MIN_POWER, Config.SHOOTER_MAX_POWER);
+                        double bumpDelta = Config.SHOOTER_BUMP_VELOCITY - Config.SHOOTER_BASE_VELOCITY;
+                        fullTargetVelocity = clip(baseVelocity + bumpDelta, Config.SHOOTER_MIN_VELOCITY, Config.SHOOTER_MAX_VELOCITY);
                     } else {
-                        fullTargetPower = Config.SHOOTER_BUMP_POWER;
+                        fullTargetVelocity = Config.SHOOTER_BUMP_VELOCITY;
                     }
                 }
             }
 
-            // Optional battery voltage compensation to maintain target output as battery sags under load
+            // Optional battery voltage compensation to maintain constant RPM under voltage sags
             if (Config.SHOOTER_VOLTAGE_COMP_ENABLED) {
                 double volts = getBatteryVoltage(now);
                 if (volts > 8.0) {
                     double compFactor = Config.NOMINAL_BATTERY_VOLTAGE / volts;
-                    fullTargetPower = clip(fullTargetPower * compFactor, 0.0, Config.SHOOTER_MAX_POWER);
+                    fullTargetVelocity = clip(fullTargetVelocity * compFactor, 0.0, Config.SHOOTER_MAX_VELOCITY);
                 }
             }
 
             double rampFrac = Config.SHOOTER_RAMP_UP_MS > 0
                     ? clip((double) (now - shooterRampStartMs) / Config.SHOOTER_RAMP_UP_MS, 0.0, 1.0)
                     : 1.0;
-            targetPower = fullTargetPower * rampFrac;
+            targetVelocity = fullTargetVelocity * rampFrac;
         } else {
             shooterRampStartMs = 0;
         }
 
-        if (Math.abs(targetPower - currentShooterPower) >= 0.001 || (targetPower == 0.0 && currentShooterPower != 0.0)) {
-            currentShooterPower = targetPower;
-            shooter.setPower(currentShooterPower);
+        if (Math.abs(targetVelocity - currentShooterVelocity) >= 1.0 || (targetVelocity == 0.0 && currentShooterVelocity != 0.0)) {
+            currentShooterVelocity = targetVelocity;
+            currentShooterPower = Config.SHOOTER_MAX_VELOCITY > 0 ? (currentShooterVelocity / Config.SHOOTER_MAX_VELOCITY) : 0.0;
+            shooter.setVelocity(currentShooterVelocity);
         }
     }
 
@@ -1522,7 +1626,7 @@ public class robertadev extends LinearOpMode {
             double rz = closestIndividualTag != null ? closestIndividualTag.rawZ : 0.0;
 
             latestTargetDistanceIn = dist;
-            tagDebug = String.format(Locale.US, "OK - Grouped Hive Target (tx %+.1f°, ty %+.1f°, tags %d)",
+            tagDebug = String.format(Locale.US, "OK - Grouped Hive Target (tx %+.1f deg, ty %+.1f deg, tags %d)",
                     groupTx, groupTy, allowedCount > 0 ? allowedCount : (fiducials != null ? fiducials.size() : 1));
             return new TagView(-1, fwd, rgt, groupTx, dist, rx, ry, rz, allowedCount);
         }
@@ -1530,7 +1634,7 @@ public class robertadev extends LinearOpMode {
         // FALLBACK: Use individual fiducial tag if grouped target result is not valid
         if (closestIndividualTag != null) {
             latestTargetDistanceIn = closestIndividualTag.distanceIn;
-            tagDebug = String.format(Locale.US, "OK - Individual Tag #%d (dist %.1f in, tx %+.1f°)",
+            tagDebug = String.format(Locale.US, "OK - Individual Tag #%d (dist %.1f in, tx %+.1f deg)",
                     closestIndividualTag.tagId, closestIndividualTag.distanceIn, closestIndividualTag.yawErrorDeg);
             return closestIndividualTag;
         }
@@ -1544,7 +1648,7 @@ public class robertadev extends LinearOpMode {
      * Yaw-Only Limelight Alignment with Velocity Lead Aiming:
      * Turns the robot to face the target tag on the yaw axis, automatically adding a lead/follow angle
      * offset based on the robot's strafe velocity when shooting on the move.
-     * Forward and strafe drive remain 0.0 so driver retains translation control or robot stays in place.
+     * Forward and strafe drive remain 0.0.
      *
      * Turn power = clip(error * ALIGN_YAW_KP, +/-ALIGN_MAX_TURN), but never smaller than
      * ALIGN_MIN_TURN while the error is outside ALIGN_YAW_TOLERANCE_DEG.
@@ -1573,7 +1677,6 @@ public class robertadev extends LinearOpMode {
         if (pinpoint != null) {
             strafeVelIPS = pinpoint.getVelY(DistanceUnit.INCH);
         } else if (Config.LEAD_AIM_USE_STICK_ESTIMATE) {
-            // Fallback velocity estimate based on joystick input (respecting REVERSE_STRAFE_STICK polarity)
             double rawStickX = Config.REVERSE_STRAFE_STICK ? -gamepad1.left_stick_x : gamepad1.left_stick_x;
             strafeVelIPS = rawStickX * Config.LEAD_AIM_STICK_MAX_IPS;
         }
@@ -1590,9 +1693,9 @@ public class robertadev extends LinearOpMode {
 
         if (Math.abs(effectiveYawErrDeg) <= Config.ALIGN_YAW_TOLERANCE_DEG) {
             stopDrive();
-            alignDebug = String.format(Locale.US, "YAW ALIGNED: tx %+.1f° | Lead %+.1f° (Vel %.1f in/s) | Dist %.1f in",
+            alignDebug = String.format(Locale.US, "YAW ALIGNED: tx %+.1f deg | Lead %+.1f deg (Vel %.1f in/s) | Dist %.1f in",
                     tag.yawErrorDeg, leadOffsetDeg, strafeVelIPS, tag.distanceIn);
-            assistStatus = String.format(Locale.US, "ALIGNED TO TAG %s (Lead %+.1f°)",
+            assistStatus = String.format(Locale.US, "ALIGNED TO TAG %s (Lead %+.1f deg)",
                     tag.tagId >= 0 ? "#" + tag.tagId : "GROUP", leadOffsetDeg);
             return;
         }
@@ -1608,9 +1711,9 @@ public class robertadev extends LinearOpMode {
 
         // Turn only (0.0 forward, 0.0 strafe)
         setRobotDrive(0.0, 0.0, turn);
-        alignDebug = String.format(Locale.US, "YAW ALIGN: tx %+.1f° | Lead %+.1f° (Vel %.1f in/s) | Turn %+.2f",
+        alignDebug = String.format(Locale.US, "YAW ALIGN: tx %+.1f deg | Lead %+.1f deg (Vel %.1f in/s) | Turn %+.2f",
                 tag.yawErrorDeg, leadOffsetDeg, strafeVelIPS, turn);
-        assistStatus = String.format(Locale.US, "YAW ALIGNING TAG %s (Lead %+.1f°)",
+        assistStatus = String.format(Locale.US, "YAW ALIGNING TAG %s (Lead %+.1f deg)",
                 tag.tagId >= 0 ? "#" + tag.tagId : "GROUP", leadOffsetDeg);
     }
 
@@ -1702,7 +1805,7 @@ public class robertadev extends LinearOpMode {
         }
 
         setRobotDrive(forward, strafeRight, turn);
-        assistStatus = String.format(Locale.US, "BALLS: %d in group, tx %.1f°, height %.2f (stop at %.2f)",
+        assistStatus = String.format(Locale.US, "BALLS: %d in group, tx %.1f deg, height %.2f (stop at %.2f)",
                 target.count, target.txDeg, target.yFraction, Config.BALL_STOP_Y_FRACTION);
     }
 
@@ -1729,30 +1832,34 @@ public class robertadev extends LinearOpMode {
         telemetry.addData("Webcam", webcamStatus);
         telemetry.addData("RGB light", rgbLight != null ? "FOUND" : "NOT FOUND (check config name)");
         telemetry.addData("Pinpoint", pinpoint != null
-                ? String.format(Locale.US, "X %.1f, Y %.1f, H %.1f°",
+                ? String.format(Locale.US, "X %.1f, Y %.1f, H %.1f deg",
                 pinpoint.getPosX(DistanceUnit.INCH), pinpoint.getPosY(DistanceUnit.INCH),
                 headingDeg())
                 : "DISCONNECTED");
         telemetry.addData("Shooter", shooter != null
-                ? String.format(Locale.US, "%s (Name: '%s') | Base: %.0f%% -> Bump: %.0f%% (%dms delay) | AutoSpeed: %s | VoltComp: %s",
+                ? String.format(Locale.US, "%s (Name: '%s') | Base: %.0f tps -> Bump: %.0f tps (%dms delay) | PIDF: [%.0f, %.0f, %.0f, %.0f] | AutoSpeed: %s",
                 Config.SHOOTER_ENABLED ? "ENABLED" : "DISABLED", Config.SHOOTER_NAME,
-                Config.SHOOTER_BASE_POWER * 100.0, Config.SHOOTER_BUMP_POWER * 100.0,
+                Config.SHOOTER_BASE_VELOCITY, Config.SHOOTER_BUMP_VELOCITY,
                 Config.SHOOTER_BUMP_DELAY_MS,
-                Config.SHOOTER_AUTO_SPEED_ENABLED ? "ON" : "OFF",
-                Config.SHOOTER_VOLTAGE_COMP_ENABLED ? "ON" : "OFF")
+                Config.SHOOTER_PIDF_P, Config.SHOOTER_PIDF_I, Config.SHOOTER_PIDF_D, Config.SHOOTER_PIDF_F,
+                Config.SHOOTER_AUTO_SPEED_ENABLED ? "ON" : "OFF")
                 : "NOT FOUND (Name: '" + Config.SHOOTER_NAME + "')");
         telemetry.addData("Custom Servo", customServo != null
                 ? String.format(Locale.US, "%s (Name: '%s') | Timer: %s (%dms)",
                 Config.SERVO_ENABLED ? "ENABLED" : "DISABLED", Config.SERVO_NAME,
                 Config.SERVO_AUTO_TIMER_ENABLED ? "AUTO" : "MANUAL", Config.SERVO_TIMER_HOLD_MS)
                 : "NOT FOUND (Name: '" + Config.SERVO_NAME + "')");
+        telemetry.addData("Pod offsets (mm)", "X %.1f | Y %.1f %s",
+                Config.PINPOINT_X_POD_OFFSET_MM, Config.PINPOINT_Y_POD_OFFSET_MM,
+                (Config.PINPOINT_X_POD_OFFSET_MM == 0.0 && Config.PINPOINT_Y_POD_OFFSET_MM == 0.0)
+                        ? "(BOTH 0.0 - measure them for a good position hold)" : "");
 
         telemetry.addLine("--- CONTROLS ---");
         telemetry.addLine("[L2] Intake IN | [L1] Intake OUT | [R2] Shooter (Auto Distance Speed)");
         telemetry.addLine("[Square] Toggle Alliance (Init) / Feeder Servo (TeleOp)");
         telemetry.addLine("[Cross] Tag Approach + Yaw Align | [Circle] Go to balls | [D-Pad Up/Down] Servo Pos 1/2");
         telemetry.addLine("[Triangle / Options] Re-zero | [D-Pad Left] Field/Robot | [R1 + D-Pad] Wheel test");
-        telemetry.addLine("Release left stick: Pinpoint X/Y hold | Right stick still rotates | Any left-stick movement unlocks");
+        telemetry.addLine("Release left stick: Pinpoint X/Y hold (+ heading hold) | Right stick still rotates | Any left-stick movement unlocks");
         telemetry.update();
     }
 
@@ -1773,9 +1880,9 @@ public class robertadev extends LinearOpMode {
         telemetry.addData("Battery", "%.2f V %s", volts, voltStatus);
         telemetry.addData("Drive", !Config.FIELD_CENTRIC ? "ROBOT-CENTRIC"
                 : (pinpoint == null ? "FIELD-CENTRIC (NO PINPOINT - acting robot-centric)" : "FIELD-CENTRIC"));
-        telemetry.addData("Heading vs Zero", "%.1f°", normalizeDegrees(robotHeadingDeg - fieldHeadingOffsetDeg));
+        telemetry.addData("Heading vs Zero", "%.1f deg", normalizeDegrees(robotHeadingDeg - fieldHeadingOffsetDeg));
         telemetry.addData("Alliance", "%s", lockedRed ? "RED" : "BLUE");
-        telemetry.addData("Pose", "X %5.1f | Y %5.1f | H %5.1f°", robotX, robotY, robotHeadingDeg);
+        telemetry.addData("Pose", "X %5.1f | Y %5.1f | H %5.1f deg", robotX, robotY, robotHeadingDeg);
         telemetry.addData("Translation Hold", !Config.TRANSLATION_HOLD_ENABLED ? "DISABLED (CONFIG)"
                 : (pinpoint == null ? "UNAVAILABLE (NO PINPOINT)"
                 : ((autoAlignActive || blobApproachActive) ? "BYPASSED (AUTO ASSIST)"
@@ -1783,37 +1890,50 @@ public class robertadev extends LinearOpMode {
         if (translationHoldActive) {
             telemetry.addData("Hold Error", "X %+.2f in | Y %+.2f in",
                     translationHoldErrorXIn, translationHoldErrorYIn);
-            telemetry.addData("Hold Power", "X %+.2f | Y %+.2f | Vel X %+.1f | Vel Y %+.1f in/s",
+            telemetry.addData("Hold Power", "X %+.2f | Y %+.2f | Vel X %+.1f | Vel Y %+.1f in/s (%s)",
                     translationHoldPowerX, translationHoldPowerY,
-                    translationHoldVelocityXIPS, translationHoldVelocityYIPS);
+                    translationHoldVelocityXIPS, translationHoldVelocityYIPS,
+                    Config.HOLD_USE_PINPOINT_VELOCITY ? "Pinpoint vel" : "derived vel");
+            telemetry.addData("Hold Heading", Config.HOLD_HEADING_ENABLED
+                    ? String.format(Locale.US, "target %.1f | err %+.1f deg | turn %+.2f",
+                    holdHeadingTargetDeg, holdHeadingErrorDeg, holdHeadingTurnPower)
+                    : "DISABLED");
+            telemetry.addData("Hold Re-captures (runaway guard)", holdRecaptureCount);
+            if (Config.HOLD_DEBUG_TELEMETRY) {
+                // Plain numbers so FTC Dashboard can graph them
+                telemetry.addData("hold_err_in", Math.hypot(translationHoldErrorXIn, translationHoldErrorYIn));
+                telemetry.addData("hold_speed_ips", Math.hypot(translationHoldVelocityXIPS, translationHoldVelocityYIPS));
+                telemetry.addData("hold_heading_err_deg", holdHeadingErrorDeg);
+            }
         }
         telemetry.addData("Lead Aiming", Config.LEAD_AIM_ENABLED
-                ? String.format(Locale.US, "ENABLED | Gain: %+.2f deg/(in/s) | Max: %.1f° | Dz: %.1f in/s",
+                ? String.format(Locale.US, "ENABLED | Gain: %+.2f deg/(in/s) | Max: %.1f deg | Dz: %.1f in/s",
                 Config.LEAD_AIM_GAIN_DEG_PER_IPS, Config.LEAD_AIM_MAX_OFFSET_DEG, Config.LEAD_AIM_VELOCITY_DEADZONE_IPS)
                 : "DISABLED");
+        double actualVel = shooter != null ? shooter.getVelocity() : 0.0;
         telemetry.addData("Shooter", shooter != null
-                ? (currentShooterPower > 0
-                ? String.format(Locale.US, "ON (%.0f%% power %s%s| target dist: %.1f in)",
-                currentShooterPower * 100.0,
-                bumpActive ? "[BUMPED 95%] " : "",
+                ? (currentShooterVelocity > 0
+                ? String.format(Locale.US, "ON (Target: %.0f tps | Actual: %.0f tps %s%s| target dist: %.1f in)",
+                currentShooterVelocity, actualVel,
+                bumpActive ? "[BUMPED] " : "",
                 Config.SHOOTER_AUTO_SPEED_ENABLED ? "[AUTO-DIST] " : "",
                 latestTargetDistanceIn)
-                : String.format(Locale.US, "OFF (Last Target Dist: %.1f in)", latestTargetDistanceIn))
+                : String.format(Locale.US, "OFF (Actual: %.0f tps | Last Target Dist: %.1f in)", actualVel, latestTargetDistanceIn))
                 : "None");
         telemetry.addData("Servo", customServo != null
-                ? String.format(Locale.US, "%s %s| Target %.1f° | Actual %.1f°",
+                ? String.format(Locale.US, "%s %s| Target %.1f deg | Actual %.1f deg",
                 servoStatePos1 ? "POS 1" : "POS 2",
                 (timerRemainingMs > 0 ? String.format(Locale.US, "(Timer: %.1fs) ", timerRemainingMs / 1000.0) : ""),
                 targetServoAngleDeg, currentServoAngleDeg)
                 : "None");
         telemetry.addData("Tag", tag != null
-                ? String.format(Locale.US, "#%d (dist %.1f in, tx %+.1f°)",
+                ? String.format(Locale.US, "#%d (dist %.1f in, tx %+.1f deg)",
                 tag.tagId, tag.distanceIn, tag.yawErrorDeg)
                 : "None");
         telemetry.addData("Tag Debug", tagDebug);
         telemetry.addData("Align Debug", alignDebug);
         telemetry.addData("Balls", ball != null
-                ? String.format(Locale.US, "%d in group, tx %+.1f°, height %.2f",
+                ? String.format(Locale.US, "%d in group, tx %+.1f deg, height %.2f",
                 ball.count, ball.txDeg, ball.yFraction)
                 : "None");
         telemetry.update();
