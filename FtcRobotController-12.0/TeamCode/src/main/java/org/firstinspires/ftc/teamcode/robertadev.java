@@ -1117,9 +1117,17 @@ public class robertadev extends LinearOpMode {
      * Improvements over the original:
      *  - Heading is held while the driver isn't turning, so a hard push can't spin the robot
      *    (rotation with imperfect pod offsets looks like fake X/Y motion and causes runaway).
-     *  - Velocity damping uses Pinpoint's own velocity (no differentiation/filter lag).
-     *  - A runaway guard re-captures the target if the error gets larger than HOLD_MAX_ERROR_IN.
-     *  - The minimum-power floor is no longer applied while braking, which removes chatter.
+    /**
+     * Actively holds the robot's Pinpoint position, and (optionally) its heading.
+     *
+     * Corrected behavior:
+     *  - Position error and robot-frame velocity are evaluated directly in the robot frame
+     *    so that robot heading rotation never flips or corrupts the braking feedback.
+     *  - Velocity damping opposes motion without reversing sign to drive away from the target.
+     *  - Runaway guard clamps maximum error magnitude during strong pushes without abandoning
+     *    the target position or inducing recursive re-captures.
+     *  - Driver polarity corrections (INVERT_FORWARD, REVERSE_DRIVE_FORWARD) are applied once
+     *    in the drive mixer, preventing double-inversion.
      */
     private void runTranslationHold(double robotHeadingDeg, double turn, long now) {
         if (!Config.TRANSLATION_HOLD_ENABLED || pinpoint == null) {
@@ -1138,46 +1146,58 @@ public class robertadev extends LinearOpMode {
             updateHoldVelocity(currentX, currentY, now);
         }
 
+        // Field-centric position error (inches)
         translationHoldErrorXIn = translationHoldTargetXIn - currentX;
         translationHoldErrorYIn = translationHoldTargetYIn - currentY;
 
-        // Runaway guard: if the robot was shoved (or odometry glitched) farther than the limit,
-        // accept the new spot instead of chasing the old one across the field.
-        if (Config.HOLD_RUNAWAY_GUARD_ENABLED
-                && Math.hypot(translationHoldErrorXIn, translationHoldErrorYIn) > Math.max(1.0, Config.HOLD_MAX_ERROR_IN)) {
-            captureTranslationHold(currentX, currentY, robotHeadingDeg, now);
-            translationHoldErrorXIn = 0.0;
-            translationHoldErrorYIn = 0.0;
-            holdRecaptureCount++;
-        }
+        // Pinpoint X increases forward, Y increases left. Field-right error is -fieldErrorY.
+        double fieldErrX = translationHoldErrorXIn;
+        double fieldErrRight = -translationHoldErrorYIn;
 
-        translationHoldPowerX = calculateTranslationHoldPower(
-                translationHoldErrorXIn, translationHoldVelocityXIPS);
-        translationHoldPowerY = calculateTranslationHoldPower(
-                translationHoldErrorYIn, translationHoldVelocityYIPS);
-
-        // Convert Pinpoint field-frame X/Y corrections into robot forward/right commands.
-        // Pinpoint X increases forward and Y increases left, so field-right is -Y.
-        // Unlike driver field-centric input, this uses Pinpoint's absolute field heading and
-        // is not changed when the driver re-zeros the joystick heading with Y/Options.
         double headingRad = Math.toRadians(normalizeDegrees(robotHeadingDeg));
         double cos = Math.cos(headingRad);
         double sin = Math.sin(headingRad);
-        double fieldForward = translationHoldPowerX;
-        double fieldRight = -translationHoldPowerY;
-        double robotForward = fieldForward * cos - fieldRight * sin;
-        double robotStrafeRight = fieldRight * cos + fieldForward * sin;
 
-        // The hold-priority mixer applies the normal direction-correction flags used by
-        // driver/assist control. Undo the translation-only flags here so feedback drives TOWARD
-        // the captured Pinpoint position, even when those optional polarity corrections are set.
-        double holdForward = robotForward;
-        double holdStrafeRight = robotStrafeRight;
-        if (Config.INVERT_FORWARD) {
-            holdForward = -holdForward;
-            holdStrafeRight = -holdStrafeRight;
+        // Convert field position error into robot-centric frame:
+        // robotErrForward: + means target is ahead of robot
+        // robotErrRight: + means target is to the right of robot
+        double robotErrForward = fieldErrX * cos - fieldErrRight * sin;
+        double robotErrRight = fieldErrRight * cos + fieldErrX * sin;
+
+        // Obtain robot-centric velocities:
+        // Pinpoint getVelX() = robot forward velocity (+ forward)
+        // Pinpoint getVelY() = robot left velocity (+ left) -> right velocity = -getVelY()
+        double velRobotForward = 0.0;
+        double velRobotRight = 0.0;
+        if (Config.HOLD_USE_PINPOINT_VELOCITY && pinpoint != null) {
+            velRobotForward = pinpoint.getVelX(DistanceUnit.INCH);
+            velRobotRight = -pinpoint.getVelY(DistanceUnit.INCH);
+            translationHoldVelocityXIPS = velRobotForward;
+            translationHoldVelocityYIPS = velRobotRight;
+        } else {
+            // Convert derived field velocity to robot frame
+            double derivedFieldVelX = translationHoldVelocityXIPS;
+            double derivedFieldVelRight = -translationHoldVelocityYIPS;
+            velRobotForward = derivedFieldVelX * cos - derivedFieldVelRight * sin;
+            velRobotRight = derivedFieldVelRight * cos + derivedFieldVelX * sin;
         }
-        if (Config.REVERSE_DRIVE_FORWARD) holdForward = -holdForward;
+
+        // Clamp error magnitude during massive pushes so power doesn't blow up infinitely,
+        // without abandoning or re-capturing the original target position.
+        double errMag = Math.hypot(robotErrForward, robotErrRight);
+        double maxAllowedError = Math.max(1.0, Config.HOLD_MAX_ERROR_IN);
+        if (errMag > maxAllowedError) {
+            double scale = maxAllowedError / errMag;
+            robotErrForward *= scale;
+            robotErrRight *= scale;
+        }
+
+        // Calculate robot-centric motor commands (forward and right)
+        translationHoldPowerX = calculateTranslationHoldPower(robotErrForward, velRobotForward);
+        translationHoldPowerY = calculateTranslationHoldPower(robotErrRight, velRobotRight);
+
+        double holdForward = translationHoldPowerX;
+        double holdStrafeRight = translationHoldPowerY;
 
         // Heading hold: follow the driver while they rotate, resist pushes when they don't.
         double holdTurn = turn;
@@ -1189,7 +1209,7 @@ public class robertadev extends LinearOpMode {
             } else {
                 holdHeadingErrorDeg = normalizeDegrees(holdHeadingTargetDeg - robotHeadingDeg);
                 if (Math.abs(holdHeadingErrorDeg) > Config.HOLD_HEADING_TOLERANCE_DEG) {
-                    double sign = Config.HOLD_HEADING_REVERSE ? 1.0 : -1.0; // same sign convention as ball-approach heading hold
+                    double sign = Config.HOLD_HEADING_REVERSE ? 1.0 : -1.0;
                     double maxTurn = clip(Config.HOLD_HEADING_MAX_TURN, 0.0, 1.0);
                     holdHeadingTurnPower = clip(sign * holdHeadingErrorDeg * Config.HOLD_HEADING_KP, -maxTurn, maxTurn);
                 }
@@ -1211,7 +1231,7 @@ public class robertadev extends LinearOpMode {
         holdHeadingTargetDeg = robotHeadingDeg;
         if (Config.HOLD_USE_PINPOINT_VELOCITY && pinpoint != null) {
             translationHoldVelocityXIPS = pinpoint.getVelX(DistanceUnit.INCH);
-            translationHoldVelocityYIPS = pinpoint.getVelY(DistanceUnit.INCH);
+            translationHoldVelocityYIPS = -pinpoint.getVelY(DistanceUnit.INCH);
         } else {
             translationHoldVelocityXIPS = 0.0;
             translationHoldVelocityYIPS = 0.0;
@@ -1222,7 +1242,7 @@ public class robertadev extends LinearOpMode {
     private void updateHoldVelocity(double currentX, double currentY, long now) {
         if (Config.HOLD_USE_PINPOINT_VELOCITY && pinpoint != null) {
             translationHoldVelocityXIPS = pinpoint.getVelX(DistanceUnit.INCH);
-            translationHoldVelocityYIPS = pinpoint.getVelY(DistanceUnit.INCH);
+            translationHoldVelocityYIPS = -pinpoint.getVelY(DistanceUnit.INCH);
         } else {
             long elapsedMs = now - translationHoldLastUpdateMs;
             if (elapsedMs > 0 && elapsedMs <= 250) {
@@ -1289,7 +1309,7 @@ public class robertadev extends LinearOpMode {
         }
     }
 
-    /** Calculates one field-axis correction using position error and measured velocity. */
+    /** Calculates one axis correction in robot frame using position error and measured velocity. */
     private double calculateTranslationHoldPower(double positionErrorIn, double velocityIPS) {
         double positionTolerance = Math.max(0.0, Config.HOLD_POSITION_TOLERANCE_IN);
         double velocityTolerance = Math.max(0.0, Config.HOLD_VELOCITY_TOLERANCE_IPS);
@@ -1303,14 +1323,22 @@ public class robertadev extends LinearOpMode {
         double maxPower = clip(Config.HOLD_MAX_POWER, 0.01, 1.0);
         double minPower = clip(Config.HOLD_MIN_POWER, 0.0, maxPower);
 
-        // Positive error commands motion toward the target; velocity feedback opposes motion.
+        // Positive error commands motion toward target; positive velocity means moving in positive direction.
+        // Damping opposes velocity: - velocityIPS * KD.
         double output = aggression * (positionErrorIn * Math.max(0.0, Config.HOLD_POSITION_KP)
                 - velocityIPS * Math.max(0.0, Config.HOLD_VELOCITY_KD));
+
+        // Safety against overshoot: when returning to target (positionError and velocity have OPPOSITE signs),
+        // ensure damping decelerates the robot without flipping output sign to push AWAY from target.
+        if (Math.abs(positionErrorIn) > positionTolerance && (positionErrorIn * velocityIPS < 0)) {
+            if (Math.signum(output) != Math.signum(positionErrorIn)) {
+                output = 0.0; // Coast / decelerate into target position
+            }
+        }
+
         output = clip(output, -maxPower, maxPower);
 
-        // Mecanum rollers and drivetrain friction can absorb very small commands. Apply the
-        // minimum only when the command is pushing TOWARD the target (same sign as the error).
-        // While braking (output opposes the error) a minimum would just cause chatter.
+        // Apply minimum power floor only when driving TOWARD target to overcome drivetrain friction.
         boolean towardTarget = Math.abs(positionErrorIn) > positionTolerance
                 && Math.signum(output) == Math.signum(positionErrorIn);
         if (towardTarget && Math.abs(output) > 0.001 && Math.abs(output) < minPower) {
