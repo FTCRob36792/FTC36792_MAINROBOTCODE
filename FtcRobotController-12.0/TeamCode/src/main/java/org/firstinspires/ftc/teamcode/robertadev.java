@@ -160,12 +160,12 @@ public class robertadev extends LinearOpMode {
         public static boolean HOLD_RUNAWAY_GUARD_ENABLED = true; // Re-capture position if pushed/glitched farther than HOLD_MAX_ERROR_IN
 
         // ---------- One-knob tuning ----------
-        public static double HOLD_AGGRESSION = 1.00;             // Overall strength multiplier for translation hold (0.25-2.5)
+        public static double HOLD_AGGRESSION = 0.25;             // Overall strength multiplier for translation hold (0.25-2.5)
 
         // ---------- Translation controller (per field axis) ----------
-        public static double HOLD_POSITION_KP = 0.12;            // Power per inch of position error (raise if it sags, lower if it overshoots)
-        public static double HOLD_VELOCITY_KD = 0.045;           // Power per inch/sec of velocity (damping/braking; raise to stop overshoot)
-        public static double HOLD_MAX_POWER = 0.35;              // Max correction power per axis (lower = gentler, less overshoot)
+        public static double HOLD_POSITION_KP = 0.05;            // Power per inch of position error (raise if it sags, lower if it overshoots)
+        public static double HOLD_VELOCITY_KD = 0.1;           // Power per inch/sec of velocity (damping/braking; raise to stop overshoot)
+        public static double HOLD_MAX_POWER = 0.1;              // Max correction power per axis (lower = gentler, less overshoot)
         public static double HOLD_MIN_POWER = 0.04;              // Min push to beat friction when moving TOWARD target (not applied while braking)
         public static double HOLD_POSITION_TOLERANCE_IN = 0.20;  // Dead zone in position (inches)
         public static double HOLD_VELOCITY_TOLERANCE_IPS = 0.75; // Dead zone in speed (in/sec) inside the position tolerance
@@ -178,7 +178,7 @@ public class robertadev extends LinearOpMode {
         public static boolean HOLD_HEADING_REVERSE = false;      // Flip if heading hold pushes the robot AWAY from its target heading
 
         // ---------- Safety net ----------
-        public static double HOLD_MAX_ERROR_IN = 18.0;           // Pushed farther than this (inches) -> accept new spot as target
+        public static double HOLD_MAX_ERROR_IN = 5.0;           // Pushed farther than this (inches) -> accept new spot as target
 
         // ---------- Debug ----------
         public static boolean HOLD_DEBUG_TELEMETRY = true;       // Show hold error/speed/heading numbers (graphable in Dashboard)
